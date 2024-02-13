@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .source_file = .{ .path = "src/main.zig" },
     });
+    firmware.addIncludePath(.{ .path = "shared/include" });
 
     // `installFirmware()` is the MicroZig pendant to `Build.installArtifact()`
     // and allows installing the firmware as a typical firmware file.
