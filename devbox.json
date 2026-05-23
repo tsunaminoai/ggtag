@@ -13,9 +13,11 @@
       "echo 'Welcome to devbox!' > /dev/null"
     ],
     "scripts": {
-      "test": [
-        "echo \"Error: no test specified\" && exit 1"
-      ]
+      "build": ["zig build wasm"],
+      "serve": ["python3 -m http.server --directory docs 8080"],
+      "dev": ["zig build wasm && python3 -m http.server --directory docs 8080"],
+      "test": ["zig build test"],
+      "test:js": ["node docs/js/editor.test.js"]
     }
   }
 }
