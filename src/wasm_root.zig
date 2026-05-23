@@ -11,15 +11,23 @@ const std = @import("std");
 // ---------------------------------------------------------------------------
 // Arena allocator — 4 MB static heap
 // The badge renders one image at a time; a simple bump allocator is sufficient.
+//
+// Each allocation is preceded by a 4-byte size header so that realloc can
+// copy the correct number of bytes when the buffer needs to grow (e.g.
+// BitBuffer::ensureCapacity). The header is transparent to C callers.
 // ---------------------------------------------------------------------------
 var heap: [4 * 1024 * 1024]u8 align(16) = undefined;
 var heap_pos: usize = 0;
 
+const MALLOC_HEADER: usize = 4; // u32 size stored before each allocation
+
 export fn malloc(size: usize) ?*anyopaque {
     const aligned = std.mem.alignForward(usize, heap_pos, 16);
-    if (aligned + size > heap.len) return null;
-    heap_pos = aligned + size;
-    return @ptrCast(&heap[aligned]);
+    if (aligned + MALLOC_HEADER + size > heap.len) return null;
+    // Store allocation size in header for use by realloc.
+    std.mem.writeInt(u32, heap[aligned..][0..4], @intCast(size), .little);
+    heap_pos = aligned + MALLOC_HEADER + size;
+    return @ptrCast(&heap[aligned + MALLOC_HEADER]);
 }
 
 export fn calloc(nmemb: usize, size: usize) ?*anyopaque {
@@ -31,12 +39,14 @@ export fn calloc(nmemb: usize, size: usize) ?*anyopaque {
 }
 
 export fn realloc(ptr: ?*anyopaque, size: usize) ?*anyopaque {
-    // Bump allocator: just allocate a new block. Old memory leaks until the
-    // arena is reset between renders. This matches the usage pattern in ggtag:
-    // BitBuffer::ensureCapacity does realloc, then the buffer is freed before
-    // the function returns.
-    _ = ptr;
-    return malloc(size);
+    if (ptr == null) return malloc(size);
+    // Read the old allocation size from the header that precedes the data.
+    const data_addr = @intFromPtr(ptr.?);
+    const old_size = std.mem.readInt(u32, @as(*const [4]u8, @ptrFromInt(data_addr - MALLOC_HEADER)), .little);
+    const new_ptr = malloc(size) orelse return null;
+    const copy_len = @min(@as(usize, old_size), size);
+    @memcpy(@as([*]u8, @ptrCast(new_ptr))[0..copy_len], @as([*]const u8, @ptrCast(ptr.?))[0..copy_len]);
+    return new_ptr;
 }
 
 export fn free(_: ?*anyopaque) void {}
@@ -127,14 +137,20 @@ export fn vprintf(_: [*:0]const u8, _: *anyopaque) c_int {
     return 0;
 }
 
-export fn sprintf(buf: [*]u8, _: [*:0]const u8, ...) c_int {
-    buf[0] = 0;
-    return 0;
+export fn sprintf(buf: [*]u8, fmt: [*:0]const u8, ...) c_int {
+    // All uses in ggtag.cpp pass constant strings with no format specifiers,
+    // so copying fmt verbatim is sufficient.
+    var i: usize = 0;
+    while (fmt[i] != 0) : (i += 1) buf[i] = fmt[i];
+    buf[i] = 0;
+    return @intCast(i);
 }
 
-export fn snprintf(buf: [*]u8, _: usize, _: [*:0]const u8, ...) c_int {
-    buf[0] = 0;
-    return 0;
+export fn snprintf(buf: [*]u8, n: usize, fmt: [*:0]const u8, ...) c_int {
+    var i: usize = 0;
+    while (fmt[i] != 0 and i + 1 < n) : (i += 1) buf[i] = fmt[i];
+    if (n > 0) buf[i] = 0;
+    return @intCast(i);
 }
 
 // stderr writes silently in WASM
