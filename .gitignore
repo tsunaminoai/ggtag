@@ -6,3 +6,7 @@ build
 compile_commands.json
 .venv
 .devbox
+
+# Zig build artifacts
+.zig-cache/
+zig-out/

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"pub fn addExecutable\\\\|pub fn addStaticLibrary\\\\|pub fn addSharedLibrary\\\\|pub fn addLibrary\\\\|pub fn addTest\\\\|pub fn createModule\" /nix/store/anhqgh20jqazy2h03h97rlv6kcl88qq7-zig-0.15.2/lib/zig/std/Build.zig | head -20)",
+      "Read(//nix/store/anhqgh20jqazy2h03h97rlv6kcl88qq7-zig-0.15.2/lib/zig/std/**)",
+      "Bash(sed -n '771,840p' /nix/store/anhqgh20jqazy2h03h97rlv6kcl88qq7-zig-0.15.2/lib/zig/std/Build.zig)",
+      "Bash(sed -n '824,878p' /nix/store/anhqgh20jqazy2h03h97rlv6kcl88qq7-zig-0.15.2/lib/zig/std/Build.zig)",
+      "Bash(sed -n '397,420p' /nix/store/anhqgh20jqazy2h03h97rlv6kcl88qq7-zig-0.15.2/lib/zig/std/Build/Module.zig)",
+      "Bash(zig build *)",
+      "Bash(grep -n \"pub const Dir\\\\|override\\\\|custom\\\\|install_dir\\\\|prefix\" /nix/store/6fqis6n588fm6f2b66z16wvmcqdqa342-zig-0.15.2/lib/zig/std/Build/Step/InstallArtifact.zig | head -20)",
+      "Read(//nix/store/6fqis6n588fm6f2b66z16wvmcqdqa342-zig-0.15.2/lib/zig/std/Build/Step/**)"
+    ]
+  }
+}
