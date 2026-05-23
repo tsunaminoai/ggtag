@@ -50,6 +50,7 @@
             <canvas id="ggOverlay" width="360" height="240" aria-hidden="true"></canvas>
         </div>
         <div id="errBanner" hidden></div>
+        <canvas id="ggViz" width="360" height="60" hidden></canvas>
     </section>
 
     <!-- Command editor column -->
@@ -65,13 +66,19 @@
     <label><input type="radio" name="iface" value="sound" checked> Sound</label>
     <label><input type="radio" name="iface" value="serial"> Serial</label>
     <button id="btnProgram">Program</button>
+    <button id="btnStop" hidden>Stop</button>
+    <span id="txTimeEst" title="Estimated sound transmission time"></span>
     <button id="btnShare">Share link</button>
     <button id="btnExport">Export JSON</button>
     <button id="btnImport">Import JSON</button>
     <input type="file" id="importFile" accept=".json" hidden>
     <span style="margin-left:auto;font-size:11px;color:#666;">
-        v1.2.0 | <a href="https://github.com/rgerganov/ggtag" style="color:#888;">source</a>
+        v1.3.0 | <a href="https://github.com/rgerganov/ggtag" style="color:#888;">source</a>
     </span>
+    <div id="txProgress" hidden>
+        <div id="txProgressBg"><div id="txProgressFill"></div></div>
+        <span id="txProgressLabel"></span>
+    </div>
 </footer>
 
 <!-- ---- Design manager dialog ---- -->

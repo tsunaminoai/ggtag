@@ -7,6 +7,7 @@
 // Globals required by GGTagModel.onChanged
 // ---------------------------------------------------------------------------
 let _repaintPending = false;
+let _autoSizeHappened = false; // set by _processImages when zero-dim image params are resolved
 
 function scheduleRepaint() {
     if (_repaintPending) return;
@@ -32,10 +33,17 @@ async function renderCycle() {
     // Skip the microtask yield when there are no image commands — avoids
     // rendering stale coordinates after rapid drag moves.
     const hasImages = rawInput.includes("\\P") || rawInput.includes("\\I");
+    _autoSizeHappened = false;
     const processed = hasImages ? await _processImages(rawInput) : rawInput;
     Module.arenaReset();
     _renderBitmap(canvas, processed);
     _repaintHandles();
+    if (_autoSizeHappened) {
+        // Rebuild props panel so width/height inputs show the resolved values
+        const sel = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+        _buildPropsPanel(sel);
+        autoSave();
+    }
 }
 
 function _renderBitmap(canvas, input) {
@@ -96,6 +104,12 @@ async function _processPNGImages(input) {
         const img = await _loadPNGImage(b64);
         const w = w0 === "0" ? img.width  : parseInt(w0);
         const h = h0 === "0" ? img.height : parseInt(h0);
+        // Auto-size: when the command was created with 0 dims, write back the resolved size
+        if ((w0 === "0" || h0 === "0") && (w > 0 || h > 0)) {
+            const cmd = GGTagModel.commands.find(c =>
+                c.type === "PNGImage" && (c.params.width === 0 || c.params.height === 0));
+            if (cmd) { cmd.params.width = w; cmd.params.height = h; _autoSizeHappened = true; }
+        }
         const bmp = _imgToBase64Bmp(img, w, h, parseInt(dither));
         if (bmp) input = input.replace(full, `\\i${x},${y},${w},${h},${bmp}`);
     }
@@ -111,6 +125,14 @@ async function _processImageURLs(input) {
             const img = await _loadURLImage(url.trim());
             const w = w0 === "0" ? img.width  : parseInt(w0);
             const h = h0 === "0" ? img.height : parseInt(h0);
+            // Auto-size: when the command was created with 0 dims, write back the resolved size
+            if ((w0 === "0" || h0 === "0") && (w > 0 || h > 0)) {
+                const urlStr = url.trim();
+                const cmd = GGTagModel.commands.find(c =>
+                    c.type === "Image" && c.params.url === urlStr &&
+                    (c.params.width === 0 || c.params.height === 0));
+                if (cmd) { cmd.params.width = w; cmd.params.height = h; _autoSizeHappened = true; }
+            }
             const bmp = _imgToBase64Bmp(img, w, h, parseInt(dither));
             if (bmp) input = input.replace(full, `\\i${x},${y},${w},${h},${bmp}`);
         } catch { /* skip unloadable URLs */ }
@@ -222,11 +244,146 @@ async function programSerial(input) {
 // Sound programming (from original main.js)
 // ---------------------------------------------------------------------------
 
-let _ggwave = null;
-let _audioCtx = null;
+let _ggwave     = null;
+let _audioCtx   = null;
 let _ggwaveInst = null;
+let _ggwaveAnalyser = null;
+let _vizRafId   = null;
+let _txStopped  = false;
+let _currentTxSrc = null;
+let _isTxing    = false;
+let _chunkDurationSec = 0; // duration of one 16-byte ggwave chunk at 48kHz
+let _txEstTimeout = null;
 
-ggwave_factory().then(obj => { _ggwave = obj; });
+ggwave_factory().then(obj => {
+    _ggwave = obj;
+    // Pre-compute chunk duration without needing an AudioContext.
+    try {
+        const p = _ggwave.getDefaultParameters();
+        p.payloadLength = 16;
+        p.sampleRateOut = 48000;
+        p.operatingMode = _ggwave.GGWAVE_OPERATING_MODE_TX | _ggwave.GGWAVE_OPERATING_MODE_USE_DSS;
+        const inst = _ggwave.init(p);
+        const wave = _ggwave.encode(inst, new Uint8Array(16),
+            _ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST, 10);
+        _chunkDurationSec = (wave.length / 4) / 48000;
+    } catch {}
+    _updateTxEstimate();
+});
+
+// ---------------------------------------------------------------------------
+// TX time estimate (updated on every design change, debounced)
+// ---------------------------------------------------------------------------
+
+function _updateTxEstimate() {
+    clearTimeout(_txEstTimeout);
+    _txEstTimeout = setTimeout(() => {
+        const el = document.getElementById("txTimeEst");
+        if (!el || !_chunkDurationSec || _isTxing) return;
+        try {
+            const inp = GGTagModel.getInput(GGTagModel.commands);
+            if (!inp) { el.textContent = ""; return; }
+            Module.arenaReset();
+            const lenPtr = Module._malloc(4);
+            const ptr = Module.ccall("encode", "number", ["string", "number"], [inp, lenPtr]);
+            if (!ptr) { Module._free(lenPtr); el.textContent = ""; return; }
+            const len = Module.getValue(lenPtr, "i32");
+            Module._free(lenPtr);
+            Module._free(ptr);
+            const chunks = Math.ceil(len / 16);
+            const secs   = Math.ceil(chunks * _chunkDurationSec);
+            el.textContent = `~${secs}s`;
+        } catch { /* WASM not ready */ }
+    }, 600);
+}
+
+function _stopTx() {
+    _txStopped = true;
+    if (_currentTxSrc) {
+        try { _currentTxSrc.stop(); } catch {}
+        _currentTxSrc = null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TX progress bar
+// ---------------------------------------------------------------------------
+
+function _txProgressStart(totalChunks) {
+    const el = document.getElementById("txProgress");
+    if (!el) return;
+    el.hidden = false;
+    const fill  = document.getElementById("txProgressFill");
+    const label = document.getElementById("txProgressLabel");
+    if (fill)  fill.style.width  = "0%";
+    if (label) label.textContent = `0/${totalChunks} chunks`;
+}
+
+function _txProgressUpdate(done, total, remainingSec) {
+    const fill  = document.getElementById("txProgressFill");
+    const label = document.getElementById("txProgressLabel");
+    if (fill)  fill.style.width  = `${Math.round((done / total) * 100)}%`;
+    if (label) {
+        const s = remainingSec > 0 ? ` — ~${Math.ceil(remainingSec)}s left` : "";
+        label.textContent = `${done}/${total} chunks${s}`;
+    }
+}
+
+function _txProgressEnd() {
+    const el = document.getElementById("txProgress");
+    if (el) el.hidden = true;
+}
+
+// ---------------------------------------------------------------------------
+// ggwave spectrogram visualization
+// ---------------------------------------------------------------------------
+
+function _startViz() {
+    if (!_ggwaveAnalyser) return;
+    const canvas = document.getElementById("ggViz");
+    if (!canvas) return;
+    canvas.hidden = false;
+    const ctx    = canvas.getContext("2d");
+    const bins   = _ggwaveAnalyser.frequencyBinCount; // fftSize/2 = 1024
+    const data   = new Uint8Array(bins);
+    const cw     = canvas.width;
+    const ch     = canvas.height;
+    // Show 0–10 kHz (relevant range for ggwave tones)
+    const maxBin = Math.floor(10000 / (_audioCtx.sampleRate / _ggwaveAnalyser.fftSize));
+    const colW   = 2;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, cw, ch);
+
+    function frame() {
+        _ggwaveAnalyser.getByteFrequencyData(data);
+        // Scroll canvas left
+        const img = ctx.getImageData(colW, 0, cw - colW, ch);
+        ctx.putImageData(img, 0, 0);
+        // Draw new column on right edge
+        for (let y = 0; y < ch; y++) {
+            // Map canvas row to frequency bin (low freq at bottom)
+            const bin = Math.round(((ch - 1 - y) / ch) * maxBin);
+            const v   = data[Math.min(bin, bins - 1)];
+            // Classic heat colormap: black→blue→cyan→green→yellow→red
+            let r = 0, g = 0, b = 0;
+            if (v < 64)       { b = v * 4; }
+            else if (v < 128) { g = (v - 64) * 4; b = 255 - g; }
+            else if (v < 192) { r = (v - 128) * 4; g = 255; b = 0; }
+            else              { r = 255; g = 255 - (v - 192) * 4; }
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(cw - colW, y, colW, 1);
+        }
+        _vizRafId = requestAnimationFrame(frame);
+    }
+    _vizRafId = requestAnimationFrame(frame);
+}
+
+function _stopViz() {
+    if (_vizRafId) { cancelAnimationFrame(_vizRafId); _vizRafId = null; }
+    // Linger for 1.5 s then fade out
+    const canvas = document.getElementById("ggViz");
+    if (canvas) setTimeout(() => { canvas.hidden = true; }, 1500);
+}
 
 async function programSound(input) {
     const data = await _encodeInput(input);
@@ -244,24 +401,57 @@ async function programSound(input) {
         _ggwaveInst = _ggwave.init(p);
     }
 
-    await new Promise(resolve => {
-        let offset = 0;
-        function tx() {
-            if (offset >= data.length) { resolve(); return; }
-            const wave = _ggwave.encode(_ggwaveInst, data.slice(offset, offset + 16),
-                _ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST, 10);
-            const f32  = new Float32Array(wave.buffer, wave.byteOffset, wave.length / 4);
-            const buf  = _audioCtx.createBuffer(1, f32.length, _audioCtx.sampleRate);
-            buf.getChannelData(0).set(f32);
-            const src  = _audioCtx.createBufferSource();
-            src.buffer = buf;
-            src.connect(_audioCtx.destination);
-            src.addEventListener("ended", tx);
-            src.start(0);
-            offset += 16;
-        }
-        tx();
-    });
+    // One persistent analyser node shared across all chunks
+    if (!_ggwaveAnalyser) {
+        _ggwaveAnalyser = _audioCtx.createAnalyser();
+        _ggwaveAnalyser.fftSize = 2048;
+        _ggwaveAnalyser.smoothingTimeConstant = 0.4;
+        _ggwaveAnalyser.connect(_audioCtx.destination);
+    }
+
+    const totalChunks = Math.ceil(data.length / 16);
+    let chunksDone = 0;
+    let chunkDuration = 0;
+
+    _isTxing   = true;
+    _txStopped = false;
+    _txProgressStart(totalChunks);
+    _startViz();
+
+    try {
+        await new Promise(resolve => {
+            let offset = 0;
+            function tx() {
+                if (_txStopped || offset >= data.length) { resolve(); return; }
+                const wave = _ggwave.encode(_ggwaveInst, data.slice(offset, offset + 16),
+                    _ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST, 10);
+                const f32  = new Float32Array(wave.buffer, wave.byteOffset, wave.length / 4);
+                const buf  = _audioCtx.createBuffer(1, f32.length, _audioCtx.sampleRate);
+                buf.getChannelData(0).set(f32);
+                if (chunksDone === 0) chunkDuration = buf.duration;
+                const src  = _audioCtx.createBufferSource();
+                _currentTxSrc = src;
+                src.buffer = buf;
+                src.connect(_ggwaveAnalyser);
+                src.addEventListener("ended", () => {
+                    _currentTxSrc = null;
+                    if (_txStopped) { resolve(); return; }
+                    chunksDone++;
+                    _txProgressUpdate(chunksDone, totalChunks, chunkDuration * (totalChunks - chunksDone));
+                    tx();
+                });
+                src.start(0);
+                offset += 16;
+            }
+            tx();
+        });
+    } finally {
+        _isTxing      = false;
+        _currentTxSrc = null;
+        _txProgressEnd();
+        _stopViz();
+        _updateTxEstimate();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +703,7 @@ function _drawHandles(cmd) {
         const h = p.height || 32;
         ctx.strokeRect(p.x, p.y, h, h);
     } else if (cmd.type === "QR code") {
-        const sz = (p.pointWidth || 2) * 7 * 8;
+        const sz = (p.pointWidth || 2) * 21;
         ctx.strokeRect(p.x, p.y, sz, sz);
     }
     ctx.setLineDash([]);
@@ -827,26 +1017,34 @@ function _handleDrop(ev) {
     ev.preventDefault();
     const files = ev.dataTransfer?.files ?? [];
     for (const file of files) {
-        if (file.type !== "image/png") continue;
+        if (!file.type.startsWith("image/")) continue;
         const reader = new FileReader();
         reader.onload = async e => {
-            const bytes = new Uint8Array(e.target.result);
-            let b64 = "";
-            for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
-            const b64str = btoa(b64);
-            const img = await _loadPNGImage(b64str);
-            const canvas = document.getElementById("ggCanvas");
-            const w = Math.min(img.width,  canvas.width);
-            const h = Math.min(img.height, canvas.height);
-            const newCmd = {
-                id: GGTagModel.makeId(),
-                type: "PNGImage",
-                params: { x: 0, y: 0, width: w, height: h, dither: "1", data: b64str },
-            };
-            GGTagModel.applyChange([...GGTagModel.commands, newCmd]);
-            rebuildUI();
+            try {
+                const dataUrl = e.target.result;
+                const img = await new Promise((res, rej) => {
+                    const i = new Image();
+                    i.onload  = () => res(i);
+                    i.onerror = rej;
+                    i.src = dataUrl;
+                });
+                const canvas = document.getElementById("ggCanvas");
+                const w = Math.min(img.naturalWidth  || canvas.width,  canvas.width);
+                const h = Math.min(img.naturalHeight || canvas.height, canvas.height);
+                const bmp = _imgToBase64Bmp(img, w, h, 1);
+                if (!bmp) { alert("Could not rasterize image."); return; }
+                const newCmd = {
+                    id: GGTagModel.makeId(),
+                    type: "BMPImage",
+                    params: { x: 0, y: 0, width: w, height: h, data: bmp },
+                };
+                GGTagModel.applyChange([...GGTagModel.commands, newCmd]);
+                rebuildUI();
+            } catch (err) {
+                alert("Failed to load dropped image: " + err.message);
+            }
         };
-        reader.readAsArrayBuffer(file);
+        reader.readAsDataURL(file);
     }
 }
 
@@ -1039,18 +1237,23 @@ function _wire() {
 
     document.getElementById("btnShare").addEventListener("click", _shareLink);
 
-    // Program button
+    // Program button + stop button
     document.getElementById("btnProgram").addEventListener("click", async () => {
-        const iface = document.querySelector("input[name=iface]:checked")?.value;
-        const btn   = document.getElementById("btnProgram");
+        const iface   = document.querySelector("input[name=iface]:checked")?.value;
+        const btnProg = document.getElementById("btnProgram");
+        const btnStop = document.getElementById("btnStop");
         try {
-            btn.disabled = true;
+            btnProg.disabled = true;
+            if (btnStop) btnStop.hidden = false;
             const inp = await _processImages(GGTagModel.getInput(GGTagModel.commands));
             if (iface === "serial") await programSerial(inp);
             else                    await programSound(inp);
-        } catch (e) { alert(String(e)); }
-        btn.disabled = false;
+        } catch (e) { if (!_txStopped) alert(String(e)); }
+        btnProg.disabled = false;
+        if (btnStop) btnStop.hidden = true;
     });
+
+    document.getElementById("btnStop")?.addEventListener("click", _stopTx);
 
     // Drag-and-drop
     document.addEventListener("drop",     _handleDrop);
@@ -1062,7 +1265,7 @@ function _wire() {
 // ---------------------------------------------------------------------------
 window.editorInit = function () {
     // Wire model.js callbacks
-    GGTagModel.onChanged = () => { autoSave(); scheduleRepaint(); };
+    GGTagModel.onChanged = () => { autoSave(); scheduleRepaint(); _updateTxEstimate(); };
 
     // Handle legacy ?i= share link
     const params = new URLSearchParams(location.search);

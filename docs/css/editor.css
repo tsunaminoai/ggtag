@@ -91,6 +91,15 @@ body {
     font-size: 12px;
     word-break: break-all;
 }
+#ggViz {
+    display: block;
+    width: 100%;
+    max-width: 540px;
+    height: 60px;
+    border: 2px solid #555;
+    background: #000;
+    image-rendering: pixelated;
+}
 
 /* ---- Command panel (layer list + props) ---- */
 #cmdPanel {
@@ -231,6 +240,43 @@ body {
 #btnProgram { background: #7a0000; border-color: #a00; color: #fff; }
 #btnProgram:hover { background: #a00; }
 #btnProgram:disabled { opacity: 0.5; cursor: default; }
+#btnStop { background: #5a0000; border-color: #c00; color: #fff; }
+#btnStop:hover { background: #c00; }
+#txTimeEst {
+    font-size: 11px;
+    color: #888;
+    white-space: nowrap;
+    min-width: 32px;
+}
+
+#txProgress {
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 4px;
+}
+#txProgressBg {
+    flex: 1;
+    height: 6px;
+    background: #333;
+    border-radius: 3px;
+    overflow: hidden;
+}
+#txProgressFill {
+    height: 100%;
+    width: 0%;
+    background: #4285f4;
+    border-radius: 3px;
+    transition: width 0.15s ease;
+}
+#txProgressLabel {
+    font-size: 11px;
+    color: #aaa;
+    white-space: nowrap;
+    min-width: 120px;
+    text-align: right;
+}
 
 /* ---- Context menu ---- */
 #ctxMenu {

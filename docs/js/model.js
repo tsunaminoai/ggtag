@@ -164,7 +164,7 @@ function getBBox(cmd) {
             return { x: x0 - 4, y: y0 - 4, w: (x1 - x0) + 8, h: (y1 - y0) + 8 };
         }
         case "QR code": {
-            const sz = (p.pointWidth || 2) * 7 * 8;
+            const sz = (p.pointWidth || 2) * 21;
             return { x: p.x, y: p.y, w: sz, h: sz };
         }
         case "Icon": {

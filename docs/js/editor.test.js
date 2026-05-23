@@ -407,9 +407,9 @@ console.log("\n10. getBBox");
 {
     const b = M.getBBox({ type: "QR code", params: { x: 5, y: 10, pointWidth: 2, text: "hi" } });
     assertEq(b.x, 5, "QR bbox x");
-    // pw=2 → sz = 2*7*8 = 112
-    assertEq(b.w, 112, "QR bbox w = pw*7*8");
-    assertEq(b.h, 112, "QR bbox h = pw*7*8");
+    // pw=2 → sz = 2*21 = 42 (version-1 QR = 21 modules)
+    assertEq(b.w, 42, "QR bbox w = pw*21");
+    assertEq(b.h, 42, "QR bbox h = pw*21");
 }
 {
     const b = M.getBBox({ type: "Icon", params: { x: 10, y: 20, height: 48, name: "star" } });
