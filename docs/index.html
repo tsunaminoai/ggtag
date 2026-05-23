@@ -54,11 +54,8 @@
 
     <!-- Command editor column -->
     <section id="cmdPanel">
-        <div id="cmdToolbar">
-            <select id="addCmdType" aria-label="Command type to add"></select>
-            <button id="btnAddCmd">+ Add</button>
-        </div>
-        <div id="cmdContainer"></div>
+        <div id="layerList"></div>
+        <div id="propsPanel"></div>
     </section>
 
 </div>
@@ -111,6 +108,9 @@
     </p>
     <button id="dlgHelpClose" style="margin-top:8px;padding:5px 16px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:#fff;">Close</button>
 </dialog>
+
+<!-- ---- Context menu ---- -->
+<div id="ctxMenu" style="display:none"></div>
 
 <!-- WebSerial-over-WebUSB polyfill for Android -->
 <script>var exports = {};</script>

@@ -29,8 +29,10 @@ async function renderCycle() {
     const canvas = document.getElementById("ggCanvas");
     if (!canvas) return;
     const rawInput = GGTagModel.getInput(GGTagModel.commands);
-    const processed = await _processImages(rawInput);
-    // Reset arena before each render so the bump allocator never exhausts.
+    // Skip the microtask yield when there are no image commands — avoids
+    // rendering stale coordinates after rapid drag moves.
+    const hasImages = rawInput.includes("\\P") || rawInput.includes("\\I");
+    const processed = hasImages ? await _processImages(rawInput) : rawInput;
     Module.arenaReset();
     _renderBitmap(canvas, processed);
     _repaintHandles();
@@ -263,54 +265,113 @@ async function programSound(input) {
 }
 
 // ---------------------------------------------------------------------------
-// UI: build one command row from a structured command object
+// UI: layer list + properties panel (canvas-first design)
 // ---------------------------------------------------------------------------
 
+// Types available via right-click (PNGImage/BMPImage are created via drag-and-drop)
 const ALL_TYPES = ["Text", "Rect", "FillRect", "Circle", "FillCircle", "Line",
-                   "QR code", "Image", "PNGImage", "Icon", "RFID"];
+                   "QR code", "Image", "Icon", "RFID"];
 
 let _selectedId = null;
-let _savedBeforeEdit = null; // snapshot taken on focusin, committed on change (for undo)
+let _savedBeforeEdit = null;
 
-function _buildRow(cmd) {
-    const row = document.createElement("div");
-    row.className = "cmdRow" + (cmd.id === _selectedId ? " selected" : "");
-    row.dataset.id = cmd.id;
+// Keys that are manipulated via canvas handles — excluded from properties panel
+const _HANDLE_KEYS = new Set(["x","y","width","height","radius","x1","y1","x2","y2","_x","_y"]);
 
-    // Clicking the row body (not controls) toggles selection
-    row.addEventListener("click", e => {
-        if (e.target !== row) return;
-        _selectedId = (_selectedId === cmd.id) ? null : cmd.id;
-        _applySelectionClass();
+// Type → hue for colored layer badges (HSL)
+const _TYPE_HUE = {
+    Text: 220, Rect: 140, FillRect: 140, Circle: 270, FillCircle: 270,
+    Line: 30, "QR code": 180, Image: 0, PNGImage: 0, BMPImage: 0, Icon: 200, RFID: 0,
+};
+
+function _cmdLabel(cmd) {
+    const p = cmd.params;
+    switch (cmd.type) {
+        case "Text":    return String(p.text || "").substring(0, 24);
+        case "QR code": return String(p.text || "").substring(0, 24);
+        case "Image":   return String(p.url  || "").replace(/^https?:\/\//, "").substring(0, 20);
+        case "Icon":    return p.name || "";
+        case "RFID":    return `${p.mode} ${p.id}`;
+        default:        return cmd.type;
+    }
+}
+
+function _buildLayerList() {
+    const list = document.getElementById("layerList");
+    if (!list) return;
+    const top = list.scrollTop;
+    list.innerHTML = "";
+    GGTagModel.commands.forEach(cmd => {
+        const item = document.createElement("div");
+        item.className = "layerItem" + (cmd.id === _selectedId ? " selected" : "");
+        item.dataset.id = cmd.id;
+
+        const badge = document.createElement("span");
+        badge.className = "layerBadge";
+        badge.textContent = cmd.type;
+        const hue = _TYPE_HUE[cmd.type] ?? 200;
+        badge.style.cssText = `background:hsl(${hue},60%,88%);color:hsl(${hue},60%,28%);border-color:hsl(${hue},60%,70%)`;
+        item.appendChild(badge);
+
+        const lbl = document.createElement("span");
+        lbl.className = "layerLabel";
+        lbl.textContent = _cmdLabel(cmd);
+        item.appendChild(lbl);
+
+        const del = document.createElement("button");
+        del.className = "btnDel";
+        del.textContent = "×";
+        del.title = "Delete";
+        del.addEventListener("click", e => {
+            e.stopPropagation();
+            const wasSel = _selectedId === cmd.id;
+            GGTagModel.applyChange(GGTagModel.commands.filter(c => c.id !== cmd.id));
+            if (wasSel) _setSelected(null);
+            rebuildUI();
+        });
+        item.appendChild(del);
+
+        item.addEventListener("click", () => _setSelected(cmd.id));
+        list.appendChild(item);
     });
+    list.scrollTop = top;
+}
 
-    // Command type selector
-    const typeSelect = document.createElement("select");
-    typeSelect.className = "cmdType";
-    ALL_TYPES.forEach(t => {
-        const o = document.createElement("option");
-        o.value = t; o.textContent = t; o.selected = t === cmd.type;
-        typeSelect.appendChild(o);
-    });
-    typeSelect.addEventListener("change", () => _changeType(cmd.id, typeSelect.value));
-    row.appendChild(typeSelect);
+function _buildPropsPanel(cmd) {
+    const pp = document.getElementById("propsPanel");
+    if (!pp) return;
+    pp.innerHTML = "";
 
-    // Field inputs from schema
-    const schema = GGTagModel.CMD_SCHEMA[cmd.type] || [];
-    schema.forEach(f => {
-        if (f.type === "hidden") {
-            // Show a brief label instead of an editable field
-            if (cmd.params[f.key]) {
-                const lbl = document.createElement("span");
-                lbl.className = "pngLabel";
-                lbl.textContent = f.label + " (embedded)";
-                row.appendChild(lbl);
-            }
-            return;
+    if (!cmd) {
+        const hint = document.createElement("p");
+        hint.className = "propsHint";
+        hint.textContent = "Right-click the canvas to add an element, or click an element to select it.";
+        pp.appendChild(hint);
+        return;
+    }
+
+    const schema = (GGTagModel.CMD_SCHEMA[cmd.type] || []).filter(f => !_HANDLE_KEYS.has(f.key) && f.type !== "hidden");
+
+    if (schema.length === 0 && cmd.type !== "PNGImage" && cmd.type !== "BMPImage") {
+        const hint = document.createElement("p");
+        hint.className = "propsHint";
+        hint.textContent = "Drag handles on the canvas to edit.";
+        pp.appendChild(hint);
+    }
+
+    // Show hidden data labels (PNG / BMP)
+    (GGTagModel.CMD_SCHEMA[cmd.type] || []).filter(f => f.type === "hidden").forEach(f => {
+        if (cmd.params[f.key]) {
+            const lbl = document.createElement("span");
+            lbl.className = "pngLabel";
+            lbl.textContent = f.label + " (embedded)";
+            pp.appendChild(lbl);
         }
+    });
 
-        const wrap = document.createElement("span");
-        wrap.className = "field";
+    schema.forEach(f => {
+        const wrap = document.createElement("div");
+        wrap.className = "propField";
 
         const lbl = document.createElement("label");
         lbl.textContent = f.label;
@@ -336,60 +397,24 @@ function _buildRow(cmd) {
             inp.type = "text";
             inp.value = cmd.params[f.key] ?? "";
         }
-
-        inp.dataset.key = f.key;
-        // Click on input selects the row
-        inp.addEventListener("click", () => {
-            _selectedId = cmd.id;
-            _applySelectionClass();
-        });
+        inp.dataset.key  = f.key;
+        inp.dataset.cmdId = cmd.id;
         wrap.appendChild(inp);
-        row.appendChild(wrap);
+        pp.appendChild(wrap);
     });
-
-    // Delete button
-    const del = document.createElement("button");
-    del.className = "btnDel";
-    del.textContent = "×"; // ×
-    del.title = "Delete";
-    del.addEventListener("click", e => {
-        e.stopPropagation();
-        if (_selectedId === cmd.id) _selectedId = null;
-        GGTagModel.applyChange(GGTagModel.commands.filter(c => c.id !== cmd.id));
-        rebuildUI();
-    });
-    row.appendChild(del);
-
-    return row;
 }
 
 function _applySelectionClass() {
-    document.querySelectorAll(".cmdRow").forEach(r => {
+    document.querySelectorAll(".layerItem").forEach(r => {
         r.classList.toggle("selected", r.dataset.id === _selectedId);
     });
     _repaintHandles();
 }
 
-function _changeType(id, newType) {
-    const old = GGTagModel.commands.find(c => c.id === id);
-    if (!old) return;
-    const newParams = { ...GGTagModel.CMD_DEFAULTS[newType] };
-    // Preserve x,y when both types have them
-    const schema = GGTagModel.CMD_SCHEMA[newType];
-    if (schema?.find(f => f.key === "x") && old.params.x !== undefined) newParams.x = old.params.x;
-    if (schema?.find(f => f.key === "y") && old.params.y !== undefined) newParams.y = old.params.y;
-    GGTagModel.applyChange(GGTagModel.commands.map(c =>
-        c.id === id ? { id, type: newType, params: newParams } : c));
-    rebuildUI();
-}
-
 function rebuildUI() {
-    const ctr = document.getElementById("cmdContainer");
-    if (!ctr) return;
-    const top = ctr.scrollTop;
-    ctr.innerHTML = "";
-    GGTagModel.commands.forEach(cmd => ctr.appendChild(_buildRow(cmd)));
-    ctr.scrollTop = top;
+    _buildLayerList();
+    const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+    _buildPropsPanel(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -434,11 +459,30 @@ function _cursorForHandle(h) {
     }
 }
 
+const _FONT_H = [8, 12, 16, 20, 24, 28, 32, 36]; // fontSize 1-8 → pixel height
+
 function _drawHandles(cmd) {
     const ov = document.getElementById("ggOverlay");
     if (!ov) return;
     const ctx = ov.getContext("2d");
     ctx.clearRect(0, 0, ov.width, ov.height);
+
+    // Draw unselected commands as faint outlines so they're visible on canvas
+    for (const c of GGTagModel.commands) {
+        if (c === cmd) continue;
+        const bb = GGTagModel.getBBox(c);
+        if (!bb) continue;
+        if (c.type === "RFID") {
+            _drawRFIDTag(ctx, c, false);
+        } else {
+            ctx.strokeStyle = "rgba(100,100,100,0.25)";
+            ctx.lineWidth   = 1;
+            ctx.setLineDash([2, 4]);
+            ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
+            ctx.setLineDash([]);
+        }
+    }
+
     if (!cmd) return;
 
     const p = cmd.params;
@@ -446,7 +490,10 @@ function _drawHandles(cmd) {
     ctx.lineWidth   = 1;
     ctx.setLineDash([4, 3]);
 
-    if (["Rect", "FillRect", "Image", "PNGImage", "BMPImage"].includes(cmd.type) && (p.width || p.height)) {
+    if (cmd.type === "RFID") {
+        ctx.setLineDash([]);
+        _drawRFIDTag(ctx, cmd, true);
+    } else if (["Rect", "FillRect", "Image", "PNGImage", "BMPImage"].includes(cmd.type)) {
         ctx.strokeRect(p.x, p.y, p.width || 0, p.height || 0);
     } else if (["Circle", "FillCircle"].includes(cmd.type) && p.radius > 0) {
         ctx.beginPath();
@@ -457,6 +504,17 @@ function _drawHandles(cmd) {
         ctx.moveTo(p.x1, p.y1);
         ctx.lineTo(p.x2, p.y2);
         ctx.stroke();
+    } else if (cmd.type === "Text") {
+        const fh = _FONT_H[(p.fontSize || 3) - 1] || 16;
+        const fw = Math.round(fh * 0.6);
+        const w  = (String(p.text || "").length || 1) * fw;
+        ctx.strokeRect(p.x, p.y, w, fh);
+    } else if (cmd.type === "Icon") {
+        const h = p.height || 32;
+        ctx.strokeRect(p.x, p.y, h, h);
+    } else if (cmd.type === "QR code") {
+        const sz = (p.pointWidth || 2) * 7 * 8;
+        ctx.strokeRect(p.x, p.y, sz, sz);
     }
     ctx.setLineDash([]);
 
@@ -471,17 +529,49 @@ function _drawHandles(cmd) {
     }
 }
 
+function _drawRFIDTag(ctx, cmd, selected) {
+    const p  = cmd.params;
+    const tx = p._x ?? 10;
+    const ty = p._y ?? 210;
+    const tw = 120, th = 22, r = 4;
+    ctx.beginPath();
+    ctx.roundRect?.(tx, ty, tw, th, r) || ctx.rect(tx, ty, tw, th);
+    ctx.fillStyle   = selected ? "#e8e8e8" : "#d0d0d0";
+    ctx.fill();
+    ctx.strokeStyle = selected ? "#555" : "#aaa";
+    ctx.lineWidth   = selected ? 1.5 : 1;
+    ctx.stroke();
+    ctx.fillStyle  = "#333";
+    ctx.font       = "10px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`RFID ${p.mode ?? ""} ${p.id ?? ""}`.trim(), tx + 6, ty + th / 2);
+}
+
 function _repaintHandles() {
     const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
     _drawHandles(cmd || null);
 }
 
-function _selectedHasXY() {
-    if (!_selectedId) return false;
-    const cmd = GGTagModel.commands.find(c => c.id === _selectedId);
-    if (!cmd) return false;
-    const s = GGTagModel.CMD_SCHEMA[cmd.type] || [];
-    return s.some(f => f.key === "x") && s.some(f => f.key === "y");
+function _hitTestAll(cx, cy) {
+    const cmds = GGTagModel.commands;
+    for (let i = cmds.length - 1; i >= 0; i--) {
+        const bb = GGTagModel.getBBox(cmds[i]);
+        if (!bb) continue;
+        if (cx >= bb.x && cx <= bb.x + bb.w && cy >= bb.y && cy <= bb.y + bb.h) return cmds[i];
+    }
+    return null;
+}
+
+function _setSelected(id) {
+    _selectedId = id;
+    _applySelectionClass();
+    _buildPropsPanel(id ? GGTagModel.commands.find(c => c.id === id) : null);
+    if (id) {
+        // Auto-focus the first text input in the props panel for keyboard editing
+        const pp = document.getElementById("propsPanel");
+        const textInp = pp?.querySelector("input[type=text]");
+        if (textInp) setTimeout(() => textInp.focus(), 0);
+    }
 }
 
 function _setupCanvas() {
@@ -505,20 +595,24 @@ function _onHover(ev) {
     const ov  = document.getElementById("ggOverlay");
     const pos = _canvasCoords(ov, ev);
     const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
-    ov.style.cursor = _cursorForHandle(cmd ? _hitHandle(pos.x, pos.y, cmd) : null);
+    const h   = cmd ? _hitHandle(pos.x, pos.y, cmd) : null;
+    // Also show grab cursor when hovering over any unselected command
+    const hovered = !h && _hitTestAll(pos.x, pos.y);
+    ov.style.cursor = h ? _cursorForHandle(h) : (hovered ? "pointer" : "crosshair");
 }
 
 function _onDown(ev) {
     ev.preventDefault();
     const ov  = document.getElementById("ggOverlay");
     const pos = _canvasCoords(ov, ev);
-    const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+    const selectedCmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
 
-    if (cmd) {
-        const h = _hitHandle(pos.x, pos.y, cmd);
+    // 1. Try to drag a handle on the currently selected command
+    if (selectedCmd) {
+        const h = _hitHandle(pos.x, pos.y, selectedCmd);
         if (h) {
             _dragStart       = pos;
-            _dragStartParams = { ...cmd.params };
+            _dragStartParams = { ...selectedCmd.params };
             _activeHandle    = h;
             _dragging        = true;
             ov.style.cursor  = "grabbing";
@@ -526,18 +620,24 @@ function _onDown(ev) {
         }
     }
 
-    // Fallback: click-to-position for commands with x/y (quick origin placement)
-    if (!_selectedHasXY()) return;
-    const c2 = GGTagModel.commands.find(c => c.id === _selectedId);
-    if (!c2) return;
-    const updated = GGTagModel.commands.map(c =>
-        c.id === _selectedId ? { ...c, params: { ...c.params, x: pos.x, y: pos.y } } : c);
-    GGTagModel.applyChange(updated);
-    const row = document.querySelector(`.cmdRow[data-id="${_selectedId}"]`);
-    if (row) {
-        const xi = row.querySelector("[data-key=x]"); if (xi) xi.value = pos.x;
-        const yi = row.querySelector("[data-key=y]"); if (yi) yi.value = pos.y;
+    // 2. Try to select whichever command is under the click
+    const hit = _hitTestAll(pos.x, pos.y);
+    if (hit) {
+        _setSelected(hit.id);
+        // Immediately start dragging the origin/move handle if it exists
+        const h = _hitHandle(pos.x, pos.y, hit) || GGTagModel.getHandles(hit).find(x => x.id === "origin" || x.id === "center" || x.id === "move");
+        if (h) {
+            _dragStart       = pos;
+            _dragStartParams = { ...hit.params };
+            _activeHandle    = h;
+            _dragging        = true;
+            ov.style.cursor  = "grabbing";
+        }
+        return;
     }
+
+    // 3. Click on empty canvas → deselect
+    _setSelected(null);
 }
 
 function _onMove(ev) {
@@ -559,7 +659,11 @@ function _onMove(ev) {
 
     switch (_activeHandle.id) {
         case "origin": case "center": case "move":
-            p.x = clampX(sp.x + dx);  p.y = clampY(sp.y + dy);
+            if (cmds[idx].type === "RFID") {
+                p._x = clampX((sp._x ?? 10) + dx);  p._y = clampY((sp._y ?? 210) + dy);
+            } else {
+                p.x = clampX(sp.x + dx);  p.y = clampY(sp.y + dy);
+            }
             break;
         case "p1":
             p.x1 = clampX(sp.x1 + dx);  p.y1 = clampY(sp.y1 + dy);
@@ -597,12 +701,13 @@ function _onMove(ev) {
 
     const updated = cmds.map((c, i) => i === idx ? { ...c, params: p } : c);
     GGTagModel.applyChange(updated, { skipUndo: true });
+    _repaintHandles(); // synchronous — keeps handles in sync without waiting for WASM render
 
-    // Update DOM inputs directly without full rebuild
-    const row = document.querySelector(`.cmdRow[data-id="${_selectedId}"]`);
-    if (row) {
+    // Update props panel inputs directly without full rebuild
+    const propsPanel = document.getElementById("propsPanel");
+    if (propsPanel) {
         for (const [k, v] of Object.entries(p)) {
-            const inp = row.querySelector(`[data-key="${k}"]`);
+            const inp = propsPanel.querySelector(`[data-key="${k}"]`);
             if (inp) inp.value = v;
         }
     }
@@ -755,51 +860,103 @@ function _updateTitleBar() {
 }
 
 // ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+let _ctxMenuCanvasPos = null; // {x, y} in canvas coords when right-click fired
+
+function _addCommandAt(type, cx, cy) {
+    const defaults = { ...GGTagModel.CMD_DEFAULTS[type] };
+    if ("x" in defaults) defaults.x = Math.max(0, cx);
+    if ("y" in defaults) defaults.y = Math.max(0, cy);
+    if ("x1" in defaults) { defaults.x1 = cx; defaults.y1 = cy; defaults.x2 = Math.min(511, cx + 60); defaults.y2 = Math.min(255, cy + 60); }
+    if ("_x" in defaults) { defaults._x = cx; defaults._y = cy; }
+    const cmd = { id: GGTagModel.makeId(), type, params: defaults };
+    GGTagModel.applyChange([...GGTagModel.commands, cmd]);
+    _setSelected(cmd.id);
+    rebuildUI();
+}
+
+function _showCtxMenu(screenX, screenY, canvasX, canvasY, cmdUnderCursor) {
+    _ctxMenuCanvasPos = { x: canvasX, y: canvasY };
+    const menu = document.getElementById("ctxMenu");
+    if (!menu) return;
+    menu.innerHTML = "";
+
+    ALL_TYPES.forEach(type => {
+        const item = document.createElement("div");
+        item.className = "ctxItem";
+        item.textContent = "Add " + type;
+        item.addEventListener("click", () => {
+            _hideCtxMenu();
+            _addCommandAt(type, canvasX, canvasY);
+        });
+        menu.appendChild(item);
+    });
+
+    if (cmdUnderCursor) {
+        const sep = document.createElement("div");
+        sep.className = "ctxSep";
+        menu.appendChild(sep);
+
+        const del = document.createElement("div");
+        del.className = "ctxItem ctxDelete";
+        del.textContent = "Delete " + cmdUnderCursor.type;
+        del.addEventListener("click", () => {
+            _hideCtxMenu();
+            GGTagModel.applyChange(GGTagModel.commands.filter(c => c.id !== cmdUnderCursor.id));
+            if (_selectedId === cmdUnderCursor.id) _setSelected(null);
+            rebuildUI();
+        });
+        menu.appendChild(del);
+    }
+
+    // Position menu; keep inside viewport
+    menu.style.display = "block";
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = (screenX + mw > vw ? screenX - mw : screenX) + "px";
+    menu.style.top  = (screenY + mh > vh ? screenY - mh : screenY) + "px";
+}
+
+function _hideCtxMenu() {
+    const menu = document.getElementById("ctxMenu");
+    if (menu) menu.style.display = "none";
+}
+
+// ---------------------------------------------------------------------------
 // Event wiring
 // ---------------------------------------------------------------------------
 
 function _wire() {
-    // Add command button
-    document.getElementById("btnAddCmd").addEventListener("click", () => {
-        const type = document.getElementById("addCmdType").value;
-        const cmd  = { id: GGTagModel.makeId(), type, params: { ...GGTagModel.CMD_DEFAULTS[type] } };
-        GGTagModel.applyChange([...GGTagModel.commands, cmd]);
-        rebuildUI();
-        const ctr = document.getElementById("cmdContainer");
-        ctr.scrollTop = ctr.scrollHeight;
-    });
+    // Props panel: focusin/input/change for live editing with undo
+    const pp = document.getElementById("propsPanel");
 
-    // Delegated events on cmdContainer
-    const ctr = document.getElementById("cmdContainer");
-
-    // Snapshot before field edit so a single undo entry covers the whole edit
-    ctr.addEventListener("focusin", e => {
+    document.addEventListener("focusin", e => {
         if (e.target.matches("[data-key]")) {
             _savedBeforeEdit = GGTagModel.commands.map(c => ({ ...c, params: { ...c.params } }));
         }
     });
 
-    // Live update model during typing (no undo entry)
-    ctr.addEventListener("input", e => {
+    document.addEventListener("input", e => {
         const inp = e.target;
         if (!inp.matches("[data-key]")) return;
-        const row = inp.closest(".cmdRow");
-        if (!row) return;
-        const id  = row.dataset.id;
+        const id  = inp.dataset.cmdId || _selectedId;
         const key = inp.dataset.key;
         const val = inp.type === "number" ? (parseInt(inp.value) || 0) : inp.value;
         const idx = GGTagModel.commands.findIndex(c => c.id === id);
         if (idx < 0) return;
-        // Mutate in place and schedule repaint (no undo push yet)
         GGTagModel.commands[idx] = {
             ...GGTagModel.commands[idx],
             params: { ...GGTagModel.commands[idx].params, [key]: val },
         };
+        // Update layer label live
+        const layerItem = document.querySelector(`.layerItem[data-id="${id}"] .layerLabel`);
+        if (layerItem) layerItem.textContent = _cmdLabel(GGTagModel.commands[idx]);
         scheduleRepaint();
     });
 
-    // On blur/Enter: commit the undo snapshot
-    ctr.addEventListener("change", e => {
+    document.addEventListener("change", e => {
         if (!e.target.matches("[data-key]")) return;
         if (_savedBeforeEdit) {
             GGTagModel.undoStack.push(_savedBeforeEdit);
@@ -816,9 +973,41 @@ function _wire() {
 
     // Keyboard shortcuts
     document.addEventListener("keydown", e => {
-        if (!(e.ctrlKey || e.metaKey)) return;
-        if (e.key === "z") { e.preventDefault(); e.shiftKey ? GGTagModel.redo() : GGTagModel.undo(); rebuildUI(); }
-        if (e.key === "y") { e.preventDefault(); GGTagModel.redo(); rebuildUI(); }
+        // Ctrl/Cmd shortcuts
+        if (e.ctrlKey || e.metaKey) {
+            if (e.key === "z") { e.preventDefault(); e.shiftKey ? GGTagModel.redo() : GGTagModel.undo(); rebuildUI(); }
+            if (e.key === "y") { e.preventDefault(); GGTagModel.redo(); rebuildUI(); }
+            return;
+        }
+        // Delete/Backspace removes selected command (unless a text input is focused)
+        if ((e.key === "Delete" || e.key === "Backspace") && _selectedId) {
+            const active = document.activeElement;
+            if (active && (active.tagName === "INPUT" || active.tagName === "SELECT" || active.tagName === "TEXTAREA")) return;
+            e.preventDefault();
+            GGTagModel.applyChange(GGTagModel.commands.filter(c => c.id !== _selectedId));
+            _setSelected(null);
+            rebuildUI();
+        }
+        // Escape: deselect + hide menu
+        if (e.key === "Escape") {
+            _hideCtxMenu();
+            _setSelected(null);
+        }
+    });
+
+    // Right-click on canvas overlay → context menu
+    const ov = document.getElementById("ggOverlay");
+    ov?.addEventListener("contextmenu", ev => {
+        ev.preventDefault();
+        const pos = _canvasCoords(ov, ev);
+        const hit = _hitTestAll(pos.x, pos.y);
+        _showCtxMenu(ev.clientX, ev.clientY, pos.x, pos.y, hit);
+    });
+
+    // Dismiss context menu on outside click
+    document.addEventListener("click", e => {
+        const menu = document.getElementById("ctxMenu");
+        if (menu && !menu.contains(e.target)) _hideCtxMenu();
     });
 
     // Design manager
@@ -874,14 +1063,6 @@ function _wire() {
 window.editorInit = function () {
     // Wire model.js callbacks
     GGTagModel.onChanged = () => { autoSave(); scheduleRepaint(); };
-
-    // Populate the "Add command" type selector
-    const sel = document.getElementById("addCmdType");
-    ALL_TYPES.forEach(t => {
-        const o = document.createElement("option");
-        o.value = t; o.textContent = t;
-        sel.appendChild(o);
-    });
 
     // Handle legacy ?i= share link
     const params = new URLSearchParams(location.search);

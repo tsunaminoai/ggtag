@@ -87,7 +87,7 @@ const CMD_DEFAULTS = {
     PNGImage:   { x: 0,   y: 0,   width: 0, height: 0, dither: "1", data: "" },
     BMPImage:   { x: 0,   y: 0,   width: 0, height: 0, data: "" },
     Icon:       { x: 10,  y: 10,  height: 32, name: "bug" },
-    RFID:       { mode: "em", id: "12", uid: "3456789A" },
+    RFID:       { mode: "em", id: "12", uid: "3456789A", _x: 10, _y: 210 },
 };
 
 // ---------------------------------------------------------------------------
@@ -129,8 +129,52 @@ function getHandles(cmd) {
                 { id: "origin", x: p.x,                        y: p.y },
                 { id: "size",   x: p.x + (p.height || 0),      y: p.y + (p.height || 0) },
             ];
+        case "RFID":
+            return [{ id: "origin", x: p._x ?? 10, y: p._y ?? 210 }];
         default:
             return [];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bounding box: returns {x,y,w,h} in canvas pixel coords for hit-testing.
+// Uses same approximations as _drawHandles outlines.
+// ---------------------------------------------------------------------------
+const _FONT_H = [8, 12, 16, 20, 24, 28, 32, 36]; // fontSize 1-8 → px height
+
+function getBBox(cmd) {
+    if (!cmd) return null;
+    const p = cmd.params;
+    switch (cmd.type) {
+        case "Text": {
+            const fh = _FONT_H[(p.fontSize || 3) - 1] || 16;
+            const fw = Math.round(fh * 0.6);
+            return { x: p.x, y: p.y, w: (String(p.text || "").length || 1) * fw, h: fh };
+        }
+        case "Rect": case "FillRect":
+        case "Image": case "PNGImage": case "BMPImage":
+            return { x: p.x, y: p.y, w: p.width || 1, h: p.height || 1 };
+        case "Circle": case "FillCircle": {
+            const r = p.radius || 1;
+            return { x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r };
+        }
+        case "Line": {
+            const x0 = Math.min(p.x1, p.x2), y0 = Math.min(p.y1, p.y2);
+            const x1 = Math.max(p.x1, p.x2), y1 = Math.max(p.y1, p.y2);
+            return { x: x0 - 4, y: y0 - 4, w: (x1 - x0) + 8, h: (y1 - y0) + 8 };
+        }
+        case "QR code": {
+            const sz = (p.pointWidth || 2) * 7 * 8;
+            return { x: p.x, y: p.y, w: sz, h: sz };
+        }
+        case "Icon": {
+            const h = p.height || 32;
+            return { x: p.x, y: p.y, w: h, h };
+        }
+        case "RFID":
+            return { x: (p._x ?? 10), y: (p._y ?? 210), w: 120, h: 22 };
+        default:
+            return null;
     }
 }
 
@@ -306,7 +350,7 @@ const m = {
     get undoStack() { return undoStack; },
     get redoStack() { return redoStack; },
     makeId, cmdToEscStr, getInput, splitCommands, parseOneCmd, parseCommands,
-    getHandles,
+    getHandles, getBBox,
     applyChange, undo, redo, pushUndo, resetState,
     listDesigns, loadDesign, saveDesign, deleteDesign, getActiveName, setActiveName,
     onChanged: null, // set by editor.js: function() { autoSave(); scheduleRepaint(); }

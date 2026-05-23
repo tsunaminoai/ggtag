@@ -345,8 +345,11 @@ console.log("\n9. getHandles");
     assertEq(size.y, 52, "icon size.y = y+height");
 }
 {
-    const h = M.getHandles({ type: "RFID", params: { mode: "em", id: "1", uid: "2" } });
-    assertEq(h.length, 0, "RFID: 0 handles");
+    const h = M.getHandles({ type: "RFID", params: { mode: "em", id: "1", uid: "2", _x: 10, _y: 210 } });
+    assertEq(h.length, 1, "RFID: 1 handle (origin)");
+    assertEq(h[0].id, "origin", "RFID handle = origin");
+    assertEq(h[0].x, 10,  "RFID handle x = _x");
+    assertEq(h[0].y, 210, "RFID handle y = _y");
 }
 {
     assertEq(M.getHandles(null).length, 0, "null cmd → 0 handles");
@@ -364,6 +367,75 @@ console.log("\n9. getHandles");
     assert(!hits(100, 100, 109, 100), "9px away → miss");
     assert(hits(100, 100, 105, 105), "diagonal ~5.66px → hit");
     assert(!hits(100, 100, 110, 110), "diagonal ~14px → miss");
+}
+
+// ---------------------------------------------------------------------------
+// 10. getBBox geometry
+// ---------------------------------------------------------------------------
+console.log("\n10. getBBox");
+
+{
+    const b = M.getBBox({ type: "Text", params: { x: 10, y: 20, fontSize: 3, text: "Hello" } });
+    assert(b !== null, "Text bbox exists");
+    assertEq(b.x, 10, "Text bbox x");
+    assertEq(b.y, 20, "Text bbox y");
+    // fontSize 3 → charH 16, charW = round(16*0.6)=10, "Hello"=5 chars → w=50
+    assertEq(b.h, 16, "Text bbox h = charH for fontSize 3");
+    assertEq(b.w, 50, "Text bbox w = 5 chars × 10px");
+}
+{
+    const b = M.getBBox({ type: "Rect", params: { x: 5, y: 10, width: 80, height: 40 } });
+    assertEq(b.x, 5,  "Rect bbox x");
+    assertEq(b.y, 10, "Rect bbox y");
+    assertEq(b.w, 80, "Rect bbox w");
+    assertEq(b.h, 40, "Rect bbox h");
+}
+{
+    const b = M.getBBox({ type: "Circle", params: { x: 50, y: 60, radius: 20 } });
+    assertEq(b.x, 30, "Circle bbox x = x-r");
+    assertEq(b.y, 40, "Circle bbox y = y-r");
+    assertEq(b.w, 40, "Circle bbox w = 2r");
+    assertEq(b.h, 40, "Circle bbox h = 2r");
+}
+{
+    const b = M.getBBox({ type: "Line", params: { x1: 10, y1: 20, x2: 90, y2: 80 } });
+    assertEq(b.x, 6,  "Line bbox x = min(x1,x2)-4");
+    assertEq(b.y, 16, "Line bbox y = min(y1,y2)-4");
+    assertEq(b.w, 88, "Line bbox w = |x2-x1|+8");
+    assertEq(b.h, 68, "Line bbox h = |y2-y1|+8");
+}
+{
+    const b = M.getBBox({ type: "QR code", params: { x: 5, y: 10, pointWidth: 2, text: "hi" } });
+    assertEq(b.x, 5, "QR bbox x");
+    // pw=2 → sz = 2*7*8 = 112
+    assertEq(b.w, 112, "QR bbox w = pw*7*8");
+    assertEq(b.h, 112, "QR bbox h = pw*7*8");
+}
+{
+    const b = M.getBBox({ type: "Icon", params: { x: 10, y: 20, height: 48, name: "star" } });
+    assertEq(b.w, 48, "Icon bbox w = height");
+    assertEq(b.h, 48, "Icon bbox h = height");
+}
+{
+    const b = M.getBBox({ type: "RFID", params: { mode: "em", id: "1", uid: "2", _x: 15, _y: 200 } });
+    assertEq(b.x, 15,  "RFID bbox x = _x");
+    assertEq(b.y, 200, "RFID bbox y = _y");
+    assertEq(b.w, 120, "RFID bbox w = 120");
+}
+{
+    assert(M.getBBox(null) === null, "null cmd → null bbox");
+}
+
+// Hit-containment math
+{
+    function inBox(b, cx, cy) {
+        return cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h;
+    }
+    const b = M.getBBox({ type: "Rect", params: { x: 10, y: 20, width: 50, height: 30 } });
+    assert(inBox(b, 35, 35),   "center of rect → hit");
+    assert(inBox(b, 10, 20),   "top-left corner → hit");
+    assert(!inBox(b, 9, 20),   "one pixel left → miss");
+    assert(!inBox(b, 35, 51),  "one pixel below → miss");
 }
 
 // ---------------------------------------------------------------------------

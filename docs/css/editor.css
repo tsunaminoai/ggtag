@@ -39,7 +39,7 @@ body {
 #appLayout {
     flex: 1;
     display: grid;
-    grid-template-columns: 360px 1fr;
+    grid-template-columns: 1fr 300px;
     overflow: hidden;
 }
 @media (max-width: 720px) {
@@ -59,7 +59,7 @@ body {
 #canvasWrap {
     position: relative;
     width: 100%;
-    max-width: 360px;
+    max-width: 540px;
     border: 2px solid #888;
     background: #fff;
     flex-shrink: 0;
@@ -82,7 +82,7 @@ body {
 }
 #errBanner {
     width: 100%;
-    max-width: 360px;
+    max-width: 540px;
     color: #900;
     background: #fee;
     border: 1px solid #fcc;
@@ -92,7 +92,7 @@ body {
     word-break: break-all;
 }
 
-/* ---- Command panel ---- */
+/* ---- Command panel (layer list + props) ---- */
 #cmdPanel {
     display: flex;
     flex-direction: column;
@@ -100,80 +100,97 @@ body {
     overflow: hidden;
     border-left: 1px solid #ddd;
 }
-#cmdToolbar {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    padding: 6px 8px;
-    border-bottom: 1px solid #eee;
-    flex-shrink: 0;
-    flex-wrap: wrap;
-}
-#cmdToolbar select, #cmdToolbar button {
-    padding: 4px 8px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    font-size: 13px;
-    cursor: pointer;
-    background: #fff;
-}
-#cmdToolbar button { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
-#cmdToolbar button:hover { background: #2e2e4a; }
 
-#cmdContainer {
-    flex: 1;
+/* ---- Layer list ---- */
+#layerList {
+    flex: 0 1 auto;
     overflow-y: auto;
-    padding: 2px 0;
+    border-bottom: 1px solid #e0e0e0;
+    min-height: 80px;
+    max-height: 55%;
 }
 
-/* ---- Command rows ---- */
-.cmdRow {
+.layerItem {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
     align-items: center;
+    gap: 6px;
     padding: 5px 8px;
     border-bottom: 1px solid #f0f0f0;
     cursor: pointer;
     transition: background 0.1s;
-}
-.cmdRow:hover { background: #f8f8f8; }
-.cmdRow.selected { background: #e8f0fe; border-left: 3px solid #4285f4; padding-left: 5px; }
-
-.cmdType {
-    font-size: 11px;
-    font-weight: 600;
-    background: #e9ecef;
-    border: 1px solid #ccc;
-    padding: 3px 6px;
-    border-radius: 4px;
-    cursor: pointer;
-    min-width: 76px;
-}
-
-.field {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-}
-.field label {
-    font-size: 10px;
-    color: #888;
-    min-width: 12px;
-    text-align: right;
     user-select: none;
 }
-.field input[type=number] { width: 52px; }
-.field input[type=text]   { width: 110px; }
-.field select             { width: 68px; }
-.field input, .field select {
-    padding: 2px 4px;
+.layerItem:hover { background: #f8f8f8; }
+.layerItem.selected { background: #e8f0fe; border-left: 3px solid #4285f4; padding-left: 5px; }
+
+.layerBadge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.layerLabel {
+    flex: 1;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #555;
+}
+.btnDel {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: #bbb;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 4px;
+}
+.btnDel:hover { color: #c00; }
+
+/* ---- Properties panel ---- */
+#propsPanel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.propsHint {
+    font-size: 12px;
+    color: #999;
+    line-height: 1.5;
+    padding: 4px 0;
+}
+
+.propField {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+.propField label {
+    font-size: 11px;
+    color: #888;
+    min-width: 48px;
+    text-align: right;
+    user-select: none;
+    flex-shrink: 0;
+}
+.propField input[type=number] { width: 64px; }
+.propField input[type=text]   { flex: 1; min-width: 0; }
+.propField select             { flex: 1; }
+.propField input, .propField select {
+    padding: 3px 6px;
     border: 1px solid #ccc;
     border-radius: 3px;
     font-size: 12px;
     font-family: inherit;
 }
-.field input:focus, .field select:focus {
+.propField input:focus, .propField select:focus {
     outline: 2px solid #4285f4;
     outline-offset: -1px;
     border-color: #4285f4;
@@ -185,19 +202,6 @@ body {
     font-style: italic;
     padding: 2px 4px;
 }
-
-.btnDel {
-    margin-left: auto;
-    flex-shrink: 0;
-    background: none;
-    border: none;
-    color: #bbb;
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    padding: 0 4px;
-}
-.btnDel:hover { color: #c00; }
 
 /* ---- Transmit bar ---- */
 #txBar {
@@ -227,6 +231,33 @@ body {
 #btnProgram { background: #7a0000; border-color: #a00; color: #fff; }
 #btnProgram:hover { background: #a00; }
 #btnProgram:disabled { opacity: 0.5; cursor: default; }
+
+/* ---- Context menu ---- */
+#ctxMenu {
+    position: fixed;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    padding: 4px 0;
+    min-width: 150px;
+    font-size: 13px;
+}
+.ctxItem {
+    padding: 6px 16px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: #222;
+}
+.ctxItem:hover { background: #f0f4ff; }
+.ctxSep {
+    height: 1px;
+    background: #eee;
+    margin: 4px 0;
+}
+.ctxDelete { color: #c00; }
+.ctxDelete:hover { background: #fff0f0; }
 
 /* ---- Design manager dialog ---- */
 dialog {
