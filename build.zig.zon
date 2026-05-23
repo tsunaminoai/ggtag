@@ -1,0 +1,19 @@
+.{
+    .fingerprint = 0xb709fd6b8482bf40,
+    .name = .ggtag,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.0",
+
+    // ggwave: submodule not cloned yet. When ready:
+    //   git submodule update --init ggwave
+    //   then add: .ggwave = .{ .path = "ggwave" }
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "host",
+        "shared",
+        "src",
+    },
+}

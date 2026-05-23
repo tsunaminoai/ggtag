@@ -1,217 +1,129 @@
 <!DOCTYPE html>
-<html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <!-- FB Meta Tags -->
-        <meta property="og:url" content="https://ggtag.io">
-        <meta property="og:type" content="website">
-        <meta property="og:title" content="ggtag">
-        <meta property="og:description" content="Programmable e-ink tag">
-        <meta property="og:image" content="https://ggtag.io/ggtag-512x512.png">
-        <!-- Twitter Meta Tags -->
-        <meta name="twitter:title" content="ggtag" />
-        <meta name="twitter:card" content="summary">
-        <meta name="twitter:description" content="Programmable e-ink tag" />
-        <meta name="twitter:image" content="https://ggtag.io/ggtag-512x512.png" />
-        <!-- Bootstrap CSS -->
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
-        <title>ggtag</title>
-        <meta charset="utf-8">
-        <script>var exports = {};</script>
-        <script src="https://use.fontawesome.com/02c2083f80.js"></script>
-        <!-- jQuery first, then Popper.js, then Bootstrap JS -->
-        <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo" crossorigin="anonymous"></script>
-        <script src="https://cdn.jsdelivr.net/npm/popper.js@1.14.7/dist/umd/popper.min.js" integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1" crossorigin="anonymous"></script>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
-        <!-- Implementation of WebSerial on top of WebUSB, needed for Android phones -->
-        <script src="js/serial.js"></script>
-        <script src="js/ggwave.js"></script>
-        <script src="js/ggtag.js"></script>
-        <script src="js/main.js"></script>
-        <link rel="apple-touch-icon" sizes="180x180" href="ggtag-180x180.png">
-        <link rel="icon" type="image/x-icon" href="favicon.ico" />
-        <link rel="manifest" href="manifest.webmanifest">
-        <!-- Google tag (gtag.js) -->
-        <script async src="https://www.googletagmanager.com/gtag/js?id=G-5PFPRJNYF2"></script>
-        <script>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', 'G-5PFPRJNYF2');
-        </script>
-    </head>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta property="og:url"         content="https://ggtag.io">
+    <meta property="og:type"        content="website">
+    <meta property="og:title"       content="ggtag">
+    <meta property="og:description" content="Programmable e-ink tag">
+    <meta property="og:image"       content="https://ggtag.io/ggtag-512x512.png">
+    <meta name="twitter:title"      content="ggtag">
+    <meta name="twitter:card"       content="summary">
+    <meta name="twitter:description" content="Programmable e-ink tag">
+    <meta name="twitter:image"      content="https://ggtag.io/ggtag-512x512.png">
+    <title>ggtag editor</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="ggtag-180x180.png">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="css/editor.css">
+    <!-- Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-5PFPRJNYF2"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag("js", new Date());
+        gtag("config", "G-5PFPRJNYF2");
+    </script>
+</head>
 <body>
-<div class="container" ondrop="dropHandler(event);" ondragover="dragOverHandler(event);">
-  <div id="errDiv" style="display: none;" class="alert alert-danger">
-    <span id="errMsg">Placeholder for error messages</span>
-  </div>
-  <div class="row my-3 ml-0">
-    <canvas id="ggCanvas" width="360" height="240" style="border:2px solid #d3d3d3;">
-      Your browser does not support the HTML canvas tag.
-    </canvas>
-  </div>
-  <div id="cmdContainer">
-    <div class="row">
-        <div class="input-group input-group-sm">
-          <div class="input-group-prepend">
-              <div class="input-group-text">
-                <input type="checkbox" aria-label="Checkbox for following text input">
-              </div>
-          </div>
-          <div class="input-group-prepend">
-            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-toggle="dropdown" aria-expanded="false">Text</button>
-            <div class="dropdown-menu">
-              <a class="dropdown-item" href="#">Text</a>
-              <a class="dropdown-item" href="#">Rect</a>
-              <a class="dropdown-item" href="#">FillRect</a>
-              <a class="dropdown-item" href="#">Circle</a>
-              <a class="dropdown-item" href="#">FillCircle</a>
-              <a class="dropdown-item" href="#">Line</a>
-              <a class="dropdown-item" href="#">QR code</a>
-              <a class="dropdown-item" href="#">Image</a>
-              <a class="dropdown-item" href="#">Icon</a>
-              <a class="dropdown-item" href="#">RFID</a>
-            </div>
-          </div>
-          <input type="text" class="form-control" aria-label="Text input with dropdown button" value="10,10,3,Hello world">
-          <div class="input-group-append">
-              <span class="input-group-text"><i class="fa fa-trash"></i></span>
-          </div>
-          <div class="input-group-append">
-              <span class="input-group-text"><i class="fa fa-plus"></i></span>
-          </div>
+
+<!-- ---- Header ---- -->
+<header id="appHeader">
+    <span id="designName">Untitled</span>
+    <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">Redo</button>
+    <button id="btnDesigns">Designs</button>
+    <button id="btnHelp">Help</button>
+</header>
+
+<!-- ---- Main area ---- -->
+<div id="appLayout">
+
+    <!-- Canvas column -->
+    <section id="canvasPanel">
+        <canvas id="ggCanvas" width="360" height="240">
+            Your browser does not support the HTML canvas element.
+        </canvas>
+        <div id="errBanner" hidden></div>
+    </section>
+
+    <!-- Command editor column -->
+    <section id="cmdPanel">
+        <div id="cmdToolbar">
+            <select id="addCmdType" aria-label="Command type to add"></select>
+            <button id="btnAddCmd">+ Add</button>
         </div>
-    </div>
-  </div>
-  <fieldset class="form-group mt-3">
-    <div class="row">
-      <legend class="col-form-label col-2">Method:</legend>
-      <div class="col-10">
-        <div class="form-check">
-          <input class="form-check-input" type="radio" name="iface" id="ifaceSound" value="sound" checked>
-          <label id="soundLabel" class="form-check-label" for="ifaceSound">
-              Sound
-          </label>
-        </div>
-        <div class="form-check">
-            <input class="form-check-input" type="radio" name="iface" id="ifaceSerial" value="serial">
-            <label class="form-check-label" for="ifaceSerial">
-                Serial
-            </label>
-        </div>
-      </div>
-    </div>
-  </fieldset>
-  <div class="form-group row">
-    <button type="submit" class="btn btn-sm btn-danger mr-3" id="program">Program <i class="fa fa-cog"></i></button>
-    <button type="submit" class="btn btn-sm btn-info mr-3" id="share">
-      <a id="tooltip" data-toggle="tooltip" title="Copied to clipboard">
-        Share <i class="fa fa-share"></i>
-      </a>
-    </button>
-    <button type="button" class="btn btn-sm btn-primary" data-toggle="modal" data-target="#helpModal">Help <i class="fa fa-question"></i></button>
-  </div>
-  <footer>
-    v1.1.0 | <a href="https://github.com/rgerganov/ggtag">source</a> | <a href="https://github.com/rgerganov/ggtag/releases/tag/v1.1.0">firmware</a>
-  </footer>
-  <!-- Help -->
-  <div class="modal fade" id="helpModal" tabindex="-1" role="dialog" aria-labelledby="helpModalLabel" aria-hidden="true">
-  <div class="modal-dialog" role="document">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="helpModalLabel">Help</h5>
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-          <span aria-hidden="true">&times;</span>
-        </button>
-      </div>
-      <div class="modal-body">
-        <div><img src="coords.png"/></div>
-        The drawing primitives have the following format:<br>
-        <b>Text:</b> <tt>X,Y,size,text</tt><br>
-        <b>Rect:</b> <tt>X,Y,width,height</tt><br>
-        <b>FillRect:</b> <tt>X,Y,width,height</tt><br>
-        <b>Circle:</b> <tt>X,Y,radius</tt><br>
-        <b>FillCircle:</b> <tt>X,Y,radius</tt><br>
-        <b>Line:</b> <tt>X1,Y1,X2,Y2</tt><br>
-        <b>QRcode:</b> <tt>X,Y,pointWidth,text</tt><br>
-        <b>Image:</b> <tt>X,Y,width,height,dither,url</tt><br>
-        <b>Icon:</b> <tt>X,Y,height,<a href="https://fontawesome.com/v5/search?o=r&m=free&s=solid" target="_blank">name</a></tt><br>
-        <b>RFID:</b> <tt>em,mfc_id_hex,uid_hex</tt><br><br>
-        You can change the initial (X,Y) coordinates of selected objects by dragging on the canvas.<br>
-        Local PNG files can be added with drag and drop.<br>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
-      </div>
-    </div>
-  </div>
+        <div id="cmdContainer"></div>
+    </section>
+
 </div>
-</div>
+
+<!-- ---- Transmit bar ---- -->
+<footer id="txBar">
+    <label><input type="radio" name="iface" value="sound" checked> Sound</label>
+    <label><input type="radio" name="iface" value="serial"> Serial</label>
+    <button id="btnProgram">Program</button>
+    <button id="btnShare">Share link</button>
+    <button id="btnExport">Export JSON</button>
+    <button id="btnImport">Import JSON</button>
+    <input type="file" id="importFile" accept=".json" hidden>
+    <span style="margin-left:auto;font-size:11px;color:#666;">
+        v1.2.0 | <a href="https://github.com/rgerganov/ggtag" style="color:#888;">source</a>
+    </span>
+</footer>
+
+<!-- ---- Design manager dialog ---- -->
+<dialog id="dlgDesigns">
+    <h2>Designs</h2>
+    <div id="designList"></div>
+    <hr style="margin:10px 0;border:none;border-top:1px solid #eee;">
+    <p style="font-size:12px;color:#666;margin-bottom:6px;">Save current design as:</p>
+    <div id="dlgSaveRow">
+        <input type="text" id="saveAsName" placeholder="Design name" maxlength="64">
+        <button id="btnSaveAs">Save</button>
+    </div>
+    <button id="dlgClose">Close</button>
+</dialog>
+
+<!-- ---- Help dialog ---- -->
+<dialog id="dlgHelp">
+    <h2>ggtag editor help</h2>
+    <p style="margin:10px 0;font-size:13px;">
+        <img src="coords.png" style="max-width:100%;margin-bottom:8px;display:block;">
+        Select a command row, then <strong>click or drag on the canvas</strong> to
+        reposition it (X, Y update live).<br><br>
+        <strong>Keyboard:</strong> Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo.<br>
+        <strong>Drop</strong> a PNG file onto the page to add it as an image command.<br><br>
+        Command parameters:<br>
+        <tt>Text: X, Y, size (1–5), text</tt><br>
+        <tt>Rect / FillRect: X, Y, width, height</tt><br>
+        <tt>Circle / FillCircle: X, Y, radius</tt><br>
+        <tt>Line: X1, Y1, X2, Y2</tt><br>
+        <tt>QR code: X, Y, point-width, text</tt><br>
+        <tt>Image: X, Y, W, H, dither, URL</tt><br>
+        <tt>Icon: X, Y, height, <a href="https://fontawesome.com/v5/search?o=r&m=free&s=solid" target="_blank">FA name</a></tt><br>
+        <tt>RFID: mode (em/hid), ID, UID</tt>
+    </p>
+    <button id="dlgHelpClose" style="margin-top:8px;padding:5px 16px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:#fff;">Close</button>
+</dialog>
+
+<!-- WebSerial-over-WebUSB polyfill for Android -->
+<script>var exports = {};</script>
+<script src="js/serial.js"></script>
+<script src="js/ggwave.js"></script>
+<!-- WASM loader — must come before model.js/editor.js; calls window.editorInit when ready -->
+<script src="js/ggtag_wasm.js"></script>
+<script src="js/model.js"></script>
+<script src="js/editor.js"></script>
 <script>
 "use strict";
-let programButton = document.getElementById('program');
-programButton.addEventListener('click', async () => {
-    let inp = getInput();
-    inp = await processImages(inp);
-    let iface = document.querySelector('input[name="iface"]:checked').value;
-    try {
-        programButton.disabled = true;
-        if (iface == "serial") {
-            await programSerial(inp);
-        } else {
-            await programSound(inp);
-        }
-    } catch (e) {
-        alert(e);
-    }
-    programButton.disabled = false;
-});
-let shareButton = document.getElementById('share');
-shareButton.addEventListener('click', onShare);
-if (!navigator.share) {
-  $('a[data-toggle="tooltip"]').tooltip({
-      placement: 'top',
-      trigger: 'click'
-  });
-  $('a[data-toggle="tooltip"]').on('shown.bs.tooltip', function () {
-      setTimeout(function () {
-          $('a[data-toggle="tooltip"]').tooltip('hide');
-      }, 1000);
-  });
-}
-$(".fa-plus").parent().click(onAdd);
-$(".fa-trash").parent().click(onDelete);
-$(".dropdown-item").click(onCmdChange);
-$("input[type=text]").keypress(onKeypress);
-$("input[type=text]").focusout(repaint);
-
-// Prevent scrolling when touching the canvas
-var canvas = document.getElementById("ggCanvas");
-document.body.addEventListener("touchstart", function (e) {
-  if (e.target == canvas) {
-    e.preventDefault();
-  }
-}, {passive: false});
-document.body.addEventListener("touchend", function (e) {
-  if (e.target == canvas) {
-    e.preventDefault();
-  }
-}, {passive: false});
-document.body.addEventListener("touchmove", function (e) {
-  if (e.target == canvas) {
-    console.log("prevent scrolling");
-    e.preventDefault();
-  }
-}, {passive: false});
-
-// Use the same handlers for mouse and touch events
-$("#ggCanvas").bind("mousedown touchstart", onMouseDown);
-$("#ggCanvas").bind("mouseup touchend", onMouseUp);
-$("#ggCanvas").bind("mousemove touchmove", onMouseMove);
-
-Module['onRuntimeInitialized'] = onRuntimeInitialized;
+// Help dialog wiring (outside editor.js to keep it simple)
+document.getElementById("btnHelp").addEventListener("click", () =>
+    document.getElementById("dlgHelp").showModal());
+document.getElementById("dlgHelpClose").addEventListener("click", () =>
+    document.getElementById("dlgHelp").close());
 </script>
 </body>
 </html>

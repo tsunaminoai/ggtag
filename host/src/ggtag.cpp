@@ -2,6 +2,8 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
+
+static const int MAX_IMAGE_PIXELS = 65536; // badge is 250x122=30500; cap prevents overflow
 #include "debug.h"
 #include "ggtag.h"
 #include "utils.h"
@@ -170,6 +172,10 @@ struct BitBuffer {
     }
     bool addCmd(const ImageCmd &cmd)
     {
+        if (cmd.width <= 0 || cmd.height <= 0 ||
+            (int64_t)cmd.width * cmd.height > MAX_IMAGE_PIXELS) {
+            return false;
+        }
         int img_size = cmd.width * cmd.height;
         const uint8_t *img = 0;
         int decoded_size = cmd.b64_data_len/4*3;
@@ -177,7 +183,10 @@ struct BitBuffer {
         if (!bmp) {
             return false;
         }
-        b64_decode((const uint8_t*)cmd.b64_data, cmd.b64_data_len, bmp);
+        if (!b64_decode((const uint8_t*)cmd.b64_data, cmd.b64_data_len, bmp, decoded_size)) {
+            free(bmp);
+            return false;
+        }
         int rle_size = 0;
         uint8_t *rle_image = rl_encode(bmp, img_size, &rle_size);
         if (rle_image && rle_size < img_size) {
@@ -496,10 +505,10 @@ bool parseTextCmd(const char *input, TextCmd *cmd, int *curr_offset)
     cmd->text_len = 0;
     while (input[offset] != '\0') {
         if (input[offset] == '\\') {
-            if (input[offset+1] == '\\') {
-                offset += 1;
+            if (input[offset+1] != '\0' && input[offset+1] == '\\') {
+                offset += 1; // consume the escaped backslash
             } else {
-                break;
+                break; // lone backslash ends the text field
             }
         }
         cmd->text_len++;
@@ -672,10 +681,10 @@ bool parseQRCodeCmd(const char *input, QRCodeCmd *cmd, int *curr_offset)
     cmd->text_len = 0;
     while (input[offset] != '\0') {
         if (input[offset] == '\\') {
-            if (input[offset+1] == '\\') {
-                offset += 1;
+            if (input[offset+1] != '\0' && input[offset+1] == '\\') {
+                offset += 1; // consume the escaped backslash
             } else {
-                break;
+                break; // lone backslash ends the text field
             }
         }
         cmd->text_len++;
@@ -1020,7 +1029,8 @@ static uint8_t* rl_encode(const uint8_t *bitmap, int bitmap_size, int *rle_lengt
 // Caller is responsible for freeing the bitmap.
 uint8_t* monoimage(const uint8_t *rgba, int width, int height, bool dither)
 {
-    if (!rgba || width <= 0 || height <= 0) {
+    if (!rgba || width <= 0 || height <= 0 ||
+        (int64_t)width * height > MAX_IMAGE_PIXELS) {
         return 0;
     }
     float *gray = (float*) malloc(width * height * sizeof(float));
@@ -1071,6 +1081,7 @@ uint8_t* monoimage(const uint8_t *rgba, int width, int height, bool dither)
     return bitmap;
 }
 
+#ifndef GGTAG_LIBRARY
 int main(int argc, char *argv[])
 {
     int len;
@@ -1087,8 +1098,9 @@ int main(int argc, char *argv[])
     free(ptr);
     const char *b64 = "aGVsbG8=";
     uint8_t data[128] = {0};
-    b64_decode((const uint8_t*) b64, strlen(b64), data);
+    int b64_len = (int)strlen(b64);
+    b64_decode((const uint8_t*) b64, b64_len, data, (int)sizeof(data));
     printf("Decoded data: %s\n", data);
-    //rl_number(NULL, 9034, 4);
     return 0;
 }
+#endif // GGTAG_LIBRARY

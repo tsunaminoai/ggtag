@@ -1012,8 +1012,15 @@ static FaIcon icons[] = {
 
 static const uint8_t b64chars[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-void b64_decode(const uint8_t *in, int in_len, uint8_t *out)
+bool b64_decode(const uint8_t *in, int in_len, uint8_t *out, int out_capacity)
 {
+    if (in_len < 0 || in_len % 4 != 0) {
+        return false;
+    }
+    int decoded_len = (in_len / 4) * 3;
+    if (out_capacity < decoded_len) {
+        return false;
+    }
     uint8_t inv[256] = {0};
     for (int i = 0; i < (int)sizeof(b64chars)-1; i++) {
         inv[b64chars[i]] = (uint8_t) i;
@@ -1029,6 +1036,7 @@ void b64_decode(const uint8_t *in, int in_len, uint8_t *out)
         *out++ = (block[1] << 4) | (block[2] >> 2);
         *out++ = (block[2] << 6) | block[3];
     }
+    return true;
 }
 
 int get_codepoint(const char *name, int len)
