@@ -43,9 +43,12 @@
 
     <!-- Canvas column -->
     <section id="canvasPanel">
-        <canvas id="ggCanvas" width="360" height="240">
-            Your browser does not support the HTML canvas element.
-        </canvas>
+        <div id="canvasWrap">
+            <canvas id="ggCanvas" width="360" height="240">
+                Your browser does not support the HTML canvas element.
+            </canvas>
+            <canvas id="ggOverlay" width="360" height="240" aria-hidden="true"></canvas>
+        </div>
         <div id="errBanner" hidden></div>
     </section>
 

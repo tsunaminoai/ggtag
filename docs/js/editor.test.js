@@ -272,6 +272,101 @@ M.resetState();
 }
 
 // ---------------------------------------------------------------------------
+// 9. getHandles geometry
+// ---------------------------------------------------------------------------
+console.log("\n9. getHandles");
+
+{
+    const h = M.getHandles({ type: "Text", params: { x: 20, y: 30 } });
+    assertEq(h.length, 1, "Text: 1 handle");
+    assertEq(h[0].id, "origin", "Text handle id = origin");
+    assertEq(h[0].x, 20, "Text handle x = 20");
+    assertEq(h[0].y, 30, "Text handle y = 30");
+}
+{
+    const h = M.getHandles({ type: "Rect", params: { x: 10, y: 20, width: 50, height: 30 } });
+    assertEq(h.length, 5, "Rect: 5 handles");
+    const ids = h.map(x => x.id);
+    assert(ids.includes("tl"), "Rect has tl");
+    assert(ids.includes("tr"), "Rect has tr");
+    assert(ids.includes("bl"), "Rect has bl");
+    assert(ids.includes("br"), "Rect has br");
+    assert(ids.includes("move"), "Rect has move");
+    const tl = h.find(x => x.id === "tl");
+    assertEq(tl.x, 10, "tl.x = x");
+    assertEq(tl.y, 20, "tl.y = y");
+    const br = h.find(x => x.id === "br");
+    assertEq(br.x, 60, "br.x = x+w");
+    assertEq(br.y, 50, "br.y = y+h");
+    const mv = h.find(x => x.id === "move");
+    assertEq(mv.x, 35, "move.x = center x");
+    assertEq(mv.y, 35, "move.y = center y");
+}
+{
+    const h = M.getHandles({ type: "FillRect", params: { x: 0, y: 0, width: 100, height: 80 } });
+    assertEq(h.length, 5, "FillRect: 5 handles");
+}
+{
+    const h = M.getHandles({ type: "Circle", params: { x: 50, y: 50, radius: 25 } });
+    assertEq(h.length, 2, "Circle: 2 handles");
+    const center = h.find(x => x.id === "center");
+    assertEq(center.x, 50, "circle center x");
+    assertEq(center.y, 50, "circle center y");
+    const edge = h.find(x => x.id === "edge");
+    assertEq(edge.x, 75, "circle edge x = x+radius");
+    assertEq(edge.y, 50, "circle edge y = y");
+}
+{
+    const h = M.getHandles({ type: "FillCircle", params: { x: 0, y: 0, radius: 10 } });
+    assertEq(h.length, 2, "FillCircle: 2 handles");
+}
+{
+    const h = M.getHandles({ type: "Line", params: { x1: 5, y1: 10, x2: 100, y2: 200 } });
+    assertEq(h.length, 2, "Line: 2 handles");
+    assertEq(h[0].id, "p1", "Line first handle = p1");
+    assertEq(h[0].x, 5,  "p1.x = x1");
+    assertEq(h[0].y, 10, "p1.y = y1");
+    assertEq(h[1].id, "p2", "Line second handle = p2");
+    assertEq(h[1].x, 100, "p2.x = x2");
+    assertEq(h[1].y, 200, "p2.y = y2");
+}
+{
+    const h = M.getHandles({ type: "QR code", params: { x: 15, y: 25, pointWidth: 2, text: "hi" } });
+    assertEq(h.length, 1, "QR code: 1 handle");
+    assertEq(h[0].id, "origin", "QR handle = origin");
+}
+{
+    const h = M.getHandles({ type: "Icon", params: { x: 10, y: 20, height: 32, name: "bug" } });
+    assertEq(h.length, 2, "Icon: 2 handles");
+    const orig = h.find(x => x.id === "origin");
+    const size = h.find(x => x.id === "size");
+    assertEq(orig.x, 10, "icon origin x");
+    assertEq(size.x, 42, "icon size.x = x+height");
+    assertEq(size.y, 52, "icon size.y = y+height");
+}
+{
+    const h = M.getHandles({ type: "RFID", params: { mode: "em", id: "1", uid: "2" } });
+    assertEq(h.length, 0, "RFID: 0 handles");
+}
+{
+    assertEq(M.getHandles(null).length, 0, "null cmd → 0 handles");
+}
+
+// Hit-test distance math (HIT_R = 8 canvas pixels)
+{
+    const HIT_R = 8;
+    function hits(hx, hy, cx, cy) {
+        const dx = cx - hx, dy = cy - hy;
+        return dx * dx + dy * dy <= HIT_R * HIT_R;
+    }
+    assert(hits(100, 100, 100, 100), "exact center → hit");
+    assert(hits(100, 100, 107, 100), "7px away → hit");
+    assert(!hits(100, 100, 109, 100), "9px away → miss");
+    assert(hits(100, 100, 105, 105), "diagonal ~5.66px → hit");
+    assert(!hits(100, 100, 110, 110), "diagonal ~14px → miss");
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 console.log(`\n${"=".repeat(40)}`);

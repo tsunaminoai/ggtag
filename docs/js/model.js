@@ -91,6 +91,50 @@ const CMD_DEFAULTS = {
 };
 
 // ---------------------------------------------------------------------------
+// Handle geometry: canvas-coordinate handles for each command type.
+// Returns [{id, x, y}, ...] in badge coordinate space (same units as params).
+// ---------------------------------------------------------------------------
+function getHandles(cmd) {
+    if (!cmd) return [];
+    const p = cmd.params;
+    switch (cmd.type) {
+        case "Text":
+            return [{ id: "origin", x: p.x, y: p.y }];
+        case "Rect": case "FillRect":
+        case "Image": case "PNGImage": case "BMPImage": {
+            const w = p.width  || 0;
+            const h = p.height || 0;
+            return [
+                { id: "tl",   x: p.x,                          y: p.y         },
+                { id: "tr",   x: p.x + w,                      y: p.y         },
+                { id: "bl",   x: p.x,                          y: p.y + h     },
+                { id: "br",   x: p.x + w,                      y: p.y + h     },
+                { id: "move", x: Math.round(p.x + w / 2),      y: Math.round(p.y + h / 2) },
+            ];
+        }
+        case "Circle": case "FillCircle":
+            return [
+                { id: "center", x: p.x,                        y: p.y },
+                { id: "edge",   x: p.x + (p.radius || 0),      y: p.y },
+            ];
+        case "Line":
+            return [
+                { id: "p1", x: p.x1, y: p.y1 },
+                { id: "p2", x: p.x2, y: p.y2 },
+            ];
+        case "QR code":
+            return [{ id: "origin", x: p.x, y: p.y }];
+        case "Icon":
+            return [
+                { id: "origin", x: p.x,                        y: p.y },
+                { id: "size",   x: p.x + (p.height || 0),      y: p.y + (p.height || 0) },
+            ];
+        default:
+            return [];
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Serialisation
 // ---------------------------------------------------------------------------
 
@@ -262,6 +306,7 @@ const m = {
     get undoStack() { return undoStack; },
     get redoStack() { return redoStack; },
     makeId, cmdToEscStr, getInput, splitCommands, parseOneCmd, parseCommands,
+    getHandles,
     applyChange, undo, redo, pushUndo, resetState,
     listDesigns, loadDesign, saveDesign, deleteDesign, getActiveName, setActiveName,
     onChanged: null, // set by editor.js: function() { autoSave(); scheduleRepaint(); }

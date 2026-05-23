@@ -33,6 +33,7 @@ async function renderCycle() {
     // Reset arena before each render so the bump allocator never exhausts.
     Module.arenaReset();
     _renderBitmap(canvas, processed);
+    _repaintHandles();
 }
 
 function _renderBitmap(canvas, input) {
@@ -366,6 +367,7 @@ function _applySelectionClass() {
     document.querySelectorAll(".cmdRow").forEach(r => {
         r.classList.toggle("selected", r.dataset.id === _selectedId);
     });
+    _repaintHandles();
 }
 
 function _changeType(id, newType) {
@@ -391,20 +393,87 @@ function rebuildUI() {
 }
 
 // ---------------------------------------------------------------------------
-// Canvas interaction: click to position, drag to move selected command
+// Canvas interaction: per-type handles, drag, resize
 // ---------------------------------------------------------------------------
 
-let _dragging = false;
-let _dragStart = null;      // { x, y } canvas coords at mousedown
-let _dragStartParams = null; // { x, y } of selected cmd at mousedown
+let _dragging      = false;
+let _dragStart     = null;  // { x, y } canvas coords at mousedown
+let _dragStartParams = null; // full snapshot of cmd.params at mousedown
+let _activeHandle  = null;  // { id, x, y } from GGTagModel.getHandles()
 
-function _canvasCoords(canvas, ev) {
-    const rect = canvas.getBoundingClientRect();
+const _HANDLE_R     = 5;                    // visual radius (canvas pixels)
+const _HIT_R        = 8;                    // hit-test radius (canvas pixels)
+const _HANDLE_COLOR = "#4285f4";
+const _OUTLINE_CLR  = "rgba(66,133,244,0.7)";
+
+function _canvasCoords(overlay, ev) {
+    const rect = overlay.getBoundingClientRect();
     const src  = ev.touches ? ev.touches[0] : ev;
     return {
-        x: Math.max(0, Math.min(canvas.width  - 1, Math.round((src.clientX - rect.left) * canvas.width  / rect.width))),
-        y: Math.max(0, Math.min(canvas.height - 1, Math.round((src.clientY - rect.top)  * canvas.height / rect.height))),
+        x: Math.max(0, Math.min(overlay.width  - 1, Math.round((src.clientX - rect.left) * overlay.width  / rect.width))),
+        y: Math.max(0, Math.min(overlay.height - 1, Math.round((src.clientY - rect.top)  * overlay.height / rect.height))),
     };
+}
+
+function _hitHandle(cx, cy, cmd) {
+    for (const h of GGTagModel.getHandles(cmd)) {
+        const dx = cx - h.x, dy = cy - h.y;
+        if (dx * dx + dy * dy <= _HIT_R * _HIT_R) return h;
+    }
+    return null;
+}
+
+function _cursorForHandle(h) {
+    if (!h) return "crosshair";
+    switch (h.id) {
+        case "origin": case "center": case "move": case "p1": case "p2": return "grab";
+        case "tl": case "br": return "nw-resize";
+        case "tr": case "bl": return "ne-resize";
+        case "edge": case "size": return "ew-resize";
+        default: return "crosshair";
+    }
+}
+
+function _drawHandles(cmd) {
+    const ov = document.getElementById("ggOverlay");
+    if (!ov) return;
+    const ctx = ov.getContext("2d");
+    ctx.clearRect(0, 0, ov.width, ov.height);
+    if (!cmd) return;
+
+    const p = cmd.params;
+    ctx.strokeStyle = _OUTLINE_CLR;
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([4, 3]);
+
+    if (["Rect", "FillRect", "Image", "PNGImage", "BMPImage"].includes(cmd.type) && (p.width || p.height)) {
+        ctx.strokeRect(p.x, p.y, p.width || 0, p.height || 0);
+    } else if (["Circle", "FillCircle"].includes(cmd.type) && p.radius > 0) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.stroke();
+    } else if (cmd.type === "Line") {
+        ctx.beginPath();
+        ctx.moveTo(p.x1, p.y1);
+        ctx.lineTo(p.x2, p.y2);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    for (const h of GGTagModel.getHandles(cmd)) {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, _HANDLE_R, 0, Math.PI * 2);
+        ctx.fillStyle   = _HANDLE_COLOR;
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+    }
+}
+
+function _repaintHandles() {
+    const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+    _drawHandles(cmd || null);
 }
 
 function _selectedHasXY() {
@@ -416,67 +485,145 @@ function _selectedHasXY() {
 }
 
 function _setupCanvas() {
-    const canvas = document.getElementById("ggCanvas");
+    const ov = document.getElementById("ggOverlay");
 
-    canvas.addEventListener("mousedown",  _onDown);
-    canvas.addEventListener("touchstart", _onDown, { passive: false });
-    canvas.addEventListener("mousemove",  _onMove);
-    canvas.addEventListener("touchmove",  _onMove, { passive: false });
-    canvas.addEventListener("mouseup",    _onUp);
-    canvas.addEventListener("touchend",   _onUp);
-    document.addEventListener("mouseup",  _onUp);
+    ov.addEventListener("mousedown",  _onDown);
+    ov.addEventListener("touchstart", _onDown, { passive: false });
+    ov.addEventListener("mousemove",  ev => { _onHover(ev); _onMove(ev); });
+    ov.addEventListener("touchmove",  _onMove, { passive: false });
+    ov.addEventListener("mouseup",    _onUp);
+    ov.addEventListener("touchend",   _onUp);
+    document.addEventListener("mouseup", _onUp);
 
-    // Prevent page scroll on touch
     document.body.addEventListener("touchmove", e => {
-        if (e.target === canvas) e.preventDefault();
+        if (e.target === ov) e.preventDefault();
     }, { passive: false });
+}
+
+function _onHover(ev) {
+    if (_dragging) return;
+    const ov  = document.getElementById("ggOverlay");
+    const pos = _canvasCoords(ov, ev);
+    const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+    ov.style.cursor = _cursorForHandle(cmd ? _hitHandle(pos.x, pos.y, cmd) : null);
 }
 
 function _onDown(ev) {
     ev.preventDefault();
+    const ov  = document.getElementById("ggOverlay");
+    const pos = _canvasCoords(ov, ev);
+    const cmd = _selectedId ? GGTagModel.commands.find(c => c.id === _selectedId) : null;
+
+    if (cmd) {
+        const h = _hitHandle(pos.x, pos.y, cmd);
+        if (h) {
+            _dragStart       = pos;
+            _dragStartParams = { ...cmd.params };
+            _activeHandle    = h;
+            _dragging        = true;
+            ov.style.cursor  = "grabbing";
+            return;
+        }
+    }
+
+    // Fallback: click-to-position for commands with x/y (quick origin placement)
     if (!_selectedHasXY()) return;
-    const canvas = document.getElementById("ggCanvas");
-    _dragStart = _canvasCoords(canvas, ev);
-    const cmd = GGTagModel.commands.find(c => c.id === _selectedId);
-    _dragStartParams = { x: cmd.params.x, y: cmd.params.y };
-    _dragging = true;
+    const c2 = GGTagModel.commands.find(c => c.id === _selectedId);
+    if (!c2) return;
+    const updated = GGTagModel.commands.map(c =>
+        c.id === _selectedId ? { ...c, params: { ...c.params, x: pos.x, y: pos.y } } : c);
+    GGTagModel.applyChange(updated);
+    const row = document.querySelector(`.cmdRow[data-id="${_selectedId}"]`);
+    if (row) {
+        const xi = row.querySelector("[data-key=x]"); if (xi) xi.value = pos.x;
+        const yi = row.querySelector("[data-key=y]"); if (yi) yi.value = pos.y;
+    }
 }
 
 function _onMove(ev) {
     if (!_dragging) return;
     ev.preventDefault();
-    const canvas = document.getElementById("ggCanvas");
-    const pos = _canvasCoords(canvas, ev);
+    const ov   = document.getElementById("ggOverlay");
+    const pos  = _canvasCoords(ov, ev);
     const cmds = GGTagModel.commands;
     const idx  = cmds.findIndex(c => c.id === _selectedId);
     if (idx < 0) { _dragging = false; return; }
-    const updated = cmds.map((c, i) => i === idx
-        ? { ...c, params: { ...c.params, x: pos.x, y: pos.y } }
-        : c);
+
+    const dx = pos.x - _dragStart.x;
+    const dy = pos.y - _dragStart.y;
+    const sp = _dragStartParams;
+    const p  = { ...sp };
+
+    const clampX = v => Math.max(0, Math.min(511, Math.round(v)));
+    const clampY = v => Math.max(0, Math.min(255, Math.round(v)));
+
+    switch (_activeHandle.id) {
+        case "origin": case "center": case "move":
+            p.x = clampX(sp.x + dx);  p.y = clampY(sp.y + dy);
+            break;
+        case "p1":
+            p.x1 = clampX(sp.x1 + dx);  p.y1 = clampY(sp.y1 + dy);
+            break;
+        case "p2":
+            p.x2 = clampX(sp.x2 + dx);  p.y2 = clampY(sp.y2 + dy);
+            break;
+        case "tl":
+            p.x      = clampX(Math.min(sp.x + (sp.width  || 0) - 1, sp.x + dx));
+            p.y      = clampY(Math.min(sp.y + (sp.height || 0) - 1, sp.y + dy));
+            p.width  = Math.max(1, (sp.width  || 0) - dx);
+            p.height = Math.max(1, (sp.height || 0) - dy);
+            break;
+        case "tr":
+            p.y      = clampY(Math.min(sp.y + (sp.height || 0) - 1, sp.y + dy));
+            p.width  = Math.max(1, (sp.width  || 0) + dx);
+            p.height = Math.max(1, (sp.height || 0) - dy);
+            break;
+        case "bl":
+            p.x      = clampX(Math.min(sp.x + (sp.width  || 0) - 1, sp.x + dx));
+            p.width  = Math.max(1, (sp.width  || 0) - dx);
+            p.height = Math.max(1, (sp.height || 0) + dy);
+            break;
+        case "br":
+            p.width  = Math.max(1, (sp.width  || 0) + dx);
+            p.height = Math.max(1, (sp.height || 0) + dy);
+            break;
+        case "edge":
+            p.radius = Math.max(1, Math.round((sp.radius || 0) + dx));
+            break;
+        case "size":
+            p.height = Math.max(8, Math.round((sp.height || 0) + Math.max(dx, dy)));
+            break;
+    }
+
+    const updated = cmds.map((c, i) => i === idx ? { ...c, params: p } : c);
     GGTagModel.applyChange(updated, { skipUndo: true });
-    // Update inputs directly rather than full DOM rebuild during drag
+
+    // Update DOM inputs directly without full rebuild
     const row = document.querySelector(`.cmdRow[data-id="${_selectedId}"]`);
     if (row) {
-        const xInp = row.querySelector("[data-key=x]");
-        const yInp = row.querySelector("[data-key=y]");
-        if (xInp) xInp.value = pos.x;
-        if (yInp) yInp.value = pos.y;
+        for (const [k, v] of Object.entries(p)) {
+            const inp = row.querySelector(`[data-key="${k}"]`);
+            if (inp) inp.value = v;
+        }
     }
 }
 
 function _onUp() {
     if (!_dragging) return;
     _dragging = false;
-    // Commit the pre-drag state as an undo entry so Ctrl+Z reverts the drag.
+    const ov = document.getElementById("ggOverlay");
+    if (ov) ov.style.cursor = "";
+    // Commit pre-drag snapshot as a single undoable entry
     if (_dragStartParams && _selectedId) {
         const snapshot = GGTagModel.commands.map(c =>
             c.id === _selectedId
-                ? { ...c, params: { ...c.params, ..._dragStartParams } }
+                ? { ...c, params: { ..._dragStartParams } }
                 : { ...c, params: { ...c.params } });
         GGTagModel.pushUndo(snapshot);
     }
+    _activeHandle    = null;
     _dragStartParams = null;
-    _dragStart = null;
+    _dragStart       = null;
 }
 
 // ---------------------------------------------------------------------------
