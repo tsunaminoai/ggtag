@@ -5,6 +5,7 @@
 #include "debug.h"
 #include "protocol.h"
 #include "ggwave/ggwave.h"
+#include "ofdm_recv.h"
 
 //#include "tusb.h"
 #include "DEV_Config.h"
@@ -244,6 +245,9 @@ void run_from_battery()
         }
     }
 
+    OfdmState *ofdm_state = ofdm_recv_init();
+    uint8_t ofdm_result[2048];
+
     GGWave *ggwave = new GGWave();
     GGWave::TxRxData result;
     // initialize ggwave
@@ -344,6 +348,22 @@ void run_from_battery()
                         if (tEnd - tStart > 1000*(float(SAMPLES_PER_FRAME)/SAMPLE_RATE)) {
                             printf("Warning: decode() took too long to execute!\n");
                         }
+                    }
+
+                    // OFDM parallel decode path
+                    if (ofdm_state && ofdm_recv_process(ofdm_state, sampleBuffer, SAMPLES_PER_FRAME)) {
+                        int ofdm_len = ofdm_recv_get_payload(ofdm_state, ofdm_result, sizeof(ofdm_result));
+                        if (ofdm_len > 0) {
+                            printf("OFDM: received %d bytes\n", ofdm_len);
+                            maxSamples = totalSamples;  // stop listening
+                            EPD_Init();
+                            Paint_NewImage(img, EPD_WIDTH, EPD_HEIGHT, 90, WHITE);
+                            Paint_Clear(WHITE);
+                            renderBits(ofdm_result, ofdm_len * 8);
+                            EPD_Display(img, NULL);
+                            EPD_Sleep();
+                        }
+                        ofdm_recv_reset(ofdm_state);
                     }
 
                     // Check if we have successfully decoded any data:
