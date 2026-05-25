@@ -452,9 +452,10 @@ function ggwaveFeed(f32) {
 // ---------------------------------------------------------------------------
 // Mic / audio wiring
 // ---------------------------------------------------------------------------
-let _audioCtx = null;
-let _recorder  = null;
-let _decoder   = new OfdmDecoder();
+let _audioCtx   = null;
+let _recorder   = null;
+let _decoder    = new OfdmDecoder();
+let _cbCount    = 0;  // callback counter for periodic logging
 
 function startListening() {
     const btnListen = document.getElementById("btnListen");
@@ -473,12 +474,27 @@ function startListening() {
     const constraints = { audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false } };
 
     navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        // Ensure context is running — some browsers suspend even on user-gesture creation
+        _audioCtx.resume().then(() => {
+            console.log("[audio] AudioContext state:", _audioCtx.state, "sampleRate:", _audioCtx.sampleRate);
+        });
+
         const src    = _audioCtx.createMediaStreamSource(stream);
         // createScriptProcessor is deprecated but universally available
         _recorder    = _audioCtx.createScriptProcessor(4096, 1, 1);
+        _cbCount     = 0;
         _recorder.onaudioprocess = e => {
             try {
                 const f32 = e.inputBuffer.getChannelData(0);
+
+                // Log audio level every ~2 seconds (24 callbacks @ 4096/48kHz ≈ 86ms each)
+                _cbCount++;
+                if (_cbCount % 24 === 1) {
+                    let rms = 0;
+                    for (let i = 0; i < f32.length; i++) rms += f32[i] * f32[i];
+                    rms = Math.sqrt(rms / f32.length);
+                    console.log(`[audio] cb#${_cbCount} rms=${rms.toFixed(5)} state=${_decoder.state} ggInst=${_ggwaveInst}`);
+                }
 
                 // --- OFDM path ---
                 const ofdmPayload = _decoder.process(f32);
