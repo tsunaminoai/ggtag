@@ -211,6 +211,7 @@ class OfdmDecoder {
                     this.nibblesDone   = 0;
                     this.state         = ST.DATA;
                     this._consume(N_SYM);
+                    console.log(`[ofdm] header: len=${this.totalLen} frameIdx=${fi} crc8=0x${chk.toString(16)}`);
                     setStatus(`Header OK — ${this.totalLen} bytes, receiving data…`);
                     setProgress(0, this.totalLen);
                     break;
@@ -235,13 +236,17 @@ class OfdmDecoder {
                     const tn = new Uint8Array(4);
                     this._decodeBits(carriers, tn, 4);
                     this._consume(N_SYM);
-                    const rxCrc = ((tn[1] << 4) | tn[0]) | (((tn[3] << 4) | tn[2]) << 8);
-                    const len   = this.totalLen;
+                    const rxCrc   = ((tn[1] << 4) | tn[0]) | (((tn[3] << 4) | tn[2]) << 8);
+                    const len     = this.totalLen;
                     if (len > MAX_PAYLOAD) { this.state = ST.SEARCHING; return null; }
                     for (let i = 0; i < len; i++)
                         this.payload[i] = (this.nibbleBuf[i*2+1] << 4) | this.nibbleBuf[i*2];
                     this.payloadLen = len;
-                    if (crc16(this.payload.subarray(0, len)) !== rxCrc) {
+                    const calcCrc = crc16(this.payload.subarray(0, len));
+                    console.log(`[ofdm] tail: rxCrc=0x${rxCrc.toString(16)} calcCrc=0x${calcCrc.toString(16)} match=${calcCrc === rxCrc}`);
+                    console.log(`[ofdm] payload (${len}B): ${Array.from(this.payload.subarray(0, Math.min(len, 64))).map(b => String.fromCharCode(b)).join('')}`);
+                    if (calcCrc !== rxCrc) {
+                        setStatus(`CRC mismatch — rx=0x${rxCrc.toString(16)} calc=0x${calcCrc.toString(16)}, retrying…`);
                         this.state = ST.ERROR_CRC;
                         return null;
                     }
@@ -258,10 +263,12 @@ class OfdmDecoder {
 // ---------------------------------------------------------------------------
 function renderPayload(bytes) {
     const canvas = document.getElementById("ggCanvas");
+    console.log(`[render] renderPayload: ${bytes.length} bytes, canvas ${canvas.width}×${canvas.height}`);
     const ctx    = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     const ptr = Module._malloc(bytes.length);
+    console.log(`[render] malloc(${bytes.length}) → ptr=${ptr}`);
     if (!ptr) { setStatus("malloc failed"); return; }
     Module.HEAPU8.set(bytes, ptr);
 
@@ -270,6 +277,7 @@ function renderPayload(bytes) {
         ["number","number","number","number"],
         [ptr, bytes.length * 8, canvas.width, canvas.height]
     );
+    console.log(`[render] renderBuffer(ptr=${ptr}, bits=${bytes.length*8}, w=${canvas.width}, h=${canvas.height}) → bitmapPtr=${bitmapPtr}`);
     Module._free(ptr);
     if (!bitmapPtr) { setStatus("renderBuffer returned null"); return; }
 
