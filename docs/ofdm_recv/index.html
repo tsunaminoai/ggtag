@@ -232,12 +232,14 @@ class OfdmDecoder {
                     if (this.ringFill < N_SYM) return null;
                     // After fine-timing in SEARCHING, ringHead is at exact preamble-1
                     // start; consuming N_SYM put us at exact preamble-2 start.
+                    // No sign check here — channel phase rotation makes it unreliable on
+                    // real speaker→mic paths; CP correlation + energy are sufficient.
                     const cp2 = this._cpMetric(this.ringHead);
                     const e2  = this._carrierEnergy(this.ringHead);
                     let posCount2 = 0;
                     for (let i = 0; i < N_CARRIERS; i++) if (this._re[BIN_LO + i] > 0) posCount2++;
                     console.log(`[ofdm] preamble2: cp=${cp2.toFixed(3)} e=${e2.toFixed(3)} pos=${posCount2}/${N_CARRIERS} ringFill=${this.ringFill}`);
-                    if (cp2 >= CP_CORR_THRESHOLD && e2 >= PREAMBLE_ENERGY_RATIO && posCount2 >= N_CARRIERS * 0.7) {
+                    if (cp2 >= CP_CORR_THRESHOLD && e2 >= PREAMBLE_ENERGY_RATIO) {
                         this._estimateChannel(this.ringHead); // re-estimate on preamble 2
                         this._consume(N_SYM);
                         this.state = ST.HEADER;
@@ -408,7 +410,10 @@ function ggwaveInit(sampleRate) {
 // when a full transfer completes, null otherwise.
 function ggwaveFeed(f32) {
     if (!_ggwave || _ggwaveInst === null) return null;
-    const tmp = _ggwave.decode(_ggwaveInst, convertToInt8(f32));
+    let tmp;
+    try { tmp = _ggwave.decode(_ggwaveInst, convertToInt8(f32)); }
+    catch (e) { console.warn("[ggwave] decode threw:", e); return null; }
+    if (!tmp || !tmp.buffer) return null;
     const pkt = new Uint8Array(tmp.buffer, tmp.byteOffset, tmp.length);
     if (!pkt || pkt.length === 0) return null;
     if (pkt.length !== 16) {
@@ -472,30 +477,34 @@ function startListening() {
         // createScriptProcessor is deprecated but universally available
         _recorder    = _audioCtx.createScriptProcessor(4096, 1, 1);
         _recorder.onaudioprocess = e => {
-            const f32 = e.inputBuffer.getChannelData(0);
+            try {
+                const f32 = e.inputBuffer.getChannelData(0);
 
-            // --- OFDM path ---
-            const ofdmPayload = _decoder.process(f32);
-            if (ofdmPayload) {
-                renderPayload(ofdmPayload);
-                setStatus(`OFDM done — ${ofdmPayload.length} bytes, CRC OK`);
-                setProgress(ofdmPayload.length, ofdmPayload.length);
-                stopListening();
-                _decoder.reset();
-                return;
-            } else if (_decoder.state === ST.ERROR_CRC) {
-                setStatus("OFDM CRC error — retrying…");
-                _decoder.reset();
-            }
+                // --- OFDM path ---
+                const ofdmPayload = _decoder.process(f32);
+                if (ofdmPayload) {
+                    renderPayload(ofdmPayload);
+                    setStatus(`OFDM done — ${ofdmPayload.length} bytes, CRC OK`);
+                    setProgress(ofdmPayload.length, ofdmPayload.length);
+                    stopListening();
+                    _decoder.reset();
+                    return;
+                } else if (_decoder.state === ST.ERROR_CRC) {
+                    setStatus("OFDM CRC error — retrying…");
+                    _decoder.reset();
+                }
 
-            // --- ggwave path (runs in parallel) ---
-            const ggPayload = ggwaveFeed(f32);
-            if (ggPayload) {
-                renderPayload(ggPayload);
-                setStatus(`ggwave done — ${ggPayload.length} bytes`);
-                setProgress(ggPayload.length, ggPayload.length);
-                stopListening();
-                return;
+                // --- ggwave path (runs in parallel) ---
+                const ggPayload = ggwaveFeed(f32);
+                if (ggPayload) {
+                    renderPayload(ggPayload);
+                    setStatus(`ggwave done — ${ggPayload.length} bytes`);
+                    setProgress(ggPayload.length, ggPayload.length);
+                    stopListening();
+                    return;
+                }
+            } catch (e) {
+                console.error("[onaudioprocess] unhandled error:", e);
             }
         };
         src.connect(_recorder);
