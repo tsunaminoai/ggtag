@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OFDM receiver — ggtag</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #f8f8f8; }
+    h2   { margin: 0 0 16px; }
+    #ggCanvas {
+      display: block;
+      border: 2px solid #ccc;
+      background: #fff;
+      max-width: 100%;
+    }
+    #controls { margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+    button {
+      padding: 6px 16px; font-size: 14px; cursor: pointer;
+      border: 1px solid #888; border-radius: 4px; background: #e8e8e8;
+    }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.active { background: #d44; color: #fff; border-color: #a00; }
+    #status { font-size: 13px; color: #555; }
+    #progress-wrap {
+      margin-top: 8px; height: 6px; background: #ddd;
+      border-radius: 3px; width: 528px; max-width: 100%;
+    }
+    #progress-bar { height: 100%; width: 0; background: #4a8; border-radius: 3px; transition: width 0.1s; }
+  </style>
+</head>
+<body>
+  <h2>OFDM receiver</h2>
+  <canvas id="ggCanvas" width="528" height="384"></canvas>
+  <div id="progress-wrap"><div id="progress-bar"></div></div>
+  <div id="controls">
+    <button id="btnListen" disabled>Start listening</button>
+    <button id="btnStop" hidden>Stop</button>
+    <span id="status">Loading WASM…</span>
+  </div>
+
+  <script src="../js/ofdm_encoder.js"></script>
+  <script src="../js/ggtag_wasm.js"></script>
+  <script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// OFDM decoder — JS port of ofdm_recv.c, tuned for browser (48 kHz, 1024-pt)
+// Reuses constants + FFT/Hamming/CRC helpers from ofdm_encoder.js.
+// ---------------------------------------------------------------------------
+const {
+    N_FFT, N_CP, N_SYM, BIN_LO, BIN_HI, N_CARRIERS,
+    fft, hamming74Decode, crc8, crc16,
+} = OfdmEncoder;
+
+const NIBBLES_PER_SYM       = Math.floor(N_CARRIERS / 7); // 23
+const PREAMBLE_ENERGY_RATIO = 0.3;
+const MAX_PAYLOAD           = 2048;
+const RING_SIZE             = N_SYM * 6;                  // 7680
+
+const ST = Object.freeze({ SEARCHING:0, PREAMBLE1:1, HEADER:2, DATA:3, TAIL:4, DONE:5, ERROR_CRC:6 });
+
+class OfdmDecoder {
+    constructor() { this._reset(); }
+
+    _reset() {
+        this.ring       = new Float32Array(RING_SIZE);
+        this.ringFill   = 0;
+        this.ringHead   = 0;
+        this.state      = ST.SEARCHING;
+        this.chanEq     = new Float32Array(N_CARRIERS).fill(1.0);
+        this.totalLen   = 0;
+        this.nibbleBuf  = new Uint8Array(MAX_PAYLOAD * 2);
+        this.nibblesNeeded = 0;
+        this.nibblesDone   = 0;
+        this.payload    = new Uint8Array(MAX_PAYLOAD);
+        this.payloadLen = 0;
+    }
+
+    reset() { this._reset(); }
+
+    _push(f32) {
+        for (let i = 0; i < f32.length; i++) {
+            const wp = (this.ringHead + this.ringFill) % RING_SIZE;
+            this.ring[wp] = f32[i];
+            if (this.ringFill < RING_SIZE) {
+                this.ringFill++;
+            } else {
+                this.ringHead = (this.ringHead + 1) % RING_SIZE;
+            }
+        }
+    }
+
+    _consume(n) {
+        if (n > this.ringFill) n = this.ringFill;
+        this.ringHead = (this.ringHead + n) % RING_SIZE;
+        this.ringFill -= n;
+    }
+
+    _fftAt(ringOff) {
+        const re = new Float64Array(N_FFT);
+        const im = new Float64Array(N_FFT);
+        const start = (ringOff + N_CP) % RING_SIZE;
+        for (let k = 0; k < N_FFT; k++) re[k] = this.ring[(start + k) % RING_SIZE];
+        fft(re, im, false);
+        return [re, im];
+    }
+
+    _carrierEnergy(ringOff) {
+        const [re, im] = this._fftAt(ringOff);
+        let cE = 0, tE = 0;
+        for (let b = 0; b < N_FFT >> 1; b++) {
+            const e = re[b]*re[b] + im[b]*im[b];
+            tE += e;
+            if (b >= BIN_LO && b <= BIN_HI) cE += e;
+        }
+        return tE < 1e-30 ? 0 : cE / tE;
+    }
+
+    _estimateChannel(ringOff) {
+        const [re, im] = this._fftAt(ringOff);
+        for (let i = 0; i < N_CARRIERS; i++) {
+            const bin = BIN_LO + i;
+            const mag = Math.sqrt(re[bin]*re[bin] + im[bin]*im[bin]);
+            this.chanEq[i] = mag > 1e-10 ? mag : 1.0;
+        }
+    }
+
+    _extractCarriers(ringOff) {
+        const [re, im] = this._fftAt(ringOff);
+        const out = new Float64Array(N_CARRIERS);
+        for (let i = 0; i < N_CARRIERS; i++) {
+            const bin = BIN_LO + i;
+            const eq = this.chanEq[i] > 1e-10 ? this.chanEq[i] : 1.0;
+            out[i] = re[bin] / eq;
+        }
+        return out;
+    }
+
+    _decodeBits(carriers, dst, max) {
+        let out = 0, pos = 0;
+        while (pos + 7 <= N_CARRIERS && out < max) {
+            let cw = 0;
+            for (let b = 0; b < 7; b++) cw = (cw << 1) | (carriers[pos + b] < 0 ? 1 : 0);
+            dst[out++] = hamming74Decode(cw);
+            pos += 7;
+        }
+        return out;
+    }
+
+    // Feed f32 microphone samples. Returns Uint8Array payload when a full
+    // frame decodes successfully; null otherwise.
+    process(f32) {
+        this._push(f32);
+        while (true) {
+            switch (this.state) {
+                case ST.DONE:
+                case ST.ERROR_CRC:
+                    return this.state === ST.DONE
+                        ? this.payload.slice(0, this.payloadLen)
+                        : null;
+
+                case ST.SEARCHING:
+                    if (this.ringFill < N_SYM) return null;
+                    if (this._carrierEnergy(this.ringHead) >= PREAMBLE_ENERGY_RATIO) {
+                        this._estimateChannel(this.ringHead);
+                        this._consume(N_SYM);
+                        this.state = ST.PREAMBLE1;
+                        setStatus("Preamble 1 detected…");
+                    } else {
+                        this._consume(1);
+                    }
+                    break;
+
+                case ST.PREAMBLE1:
+                    if (this.ringFill < N_SYM) return null;
+                    if (this._carrierEnergy(this.ringHead) >= PREAMBLE_ENERGY_RATIO) {
+                        this._estimateChannel(this.ringHead);
+                        this._consume(N_SYM);
+                        this.state = ST.HEADER;
+                        setStatus("Preamble 2 detected, reading header…");
+                    } else {
+                        this.state = ST.SEARCHING;
+                    }
+                    break;
+
+                case ST.HEADER: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers = this._extractCarriers(this.ringHead);
+                    const nibs = new Uint8Array(8);
+                    if (this._decodeBits(carriers, nibs, 8) < 8) {
+                        this.state = ST.SEARCHING; return null;
+                    }
+                    const lenLo = (nibs[1] << 4) | nibs[0];
+                    const lenHi = (nibs[3] << 4) | nibs[2];
+                    const fi    = (nibs[5] << 4) | nibs[4];
+                    const chk   = (nibs[7] << 4) | nibs[6];
+                    if (chk !== crc8(new Uint8Array([lenLo, lenHi, fi])) || (lenLo === 0 && lenHi === 0)) {
+                        this.state = ST.SEARCHING; return null;
+                    }
+                    this.totalLen      = (lenHi << 8) | lenLo;
+                    this.nibblesNeeded = this.totalLen * 2;
+                    this.nibblesDone   = 0;
+                    this.state         = ST.DATA;
+                    this._consume(N_SYM);
+                    setStatus(`Header OK — ${this.totalLen} bytes, receiving data…`);
+                    setProgress(0, this.totalLen);
+                    break;
+                }
+
+                case ST.DATA: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers  = this._extractCarriers(this.ringHead);
+                    const remaining = this.nibblesNeeded - this.nibblesDone;
+                    const want      = Math.min(remaining, NIBBLES_PER_SYM);
+                    this.nibblesDone += this._decodeBits(carriers, this.nibbleBuf.subarray(this.nibblesDone), want);
+                    this._consume(N_SYM);
+                    const bytesIn = Math.floor(this.nibblesDone / 2);
+                    setProgress(bytesIn, this.totalLen);
+                    if (this.nibblesDone >= this.nibblesNeeded) this.state = ST.TAIL;
+                    break;
+                }
+
+                case ST.TAIL: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers = this._extractCarriers(this.ringHead);
+                    const tn = new Uint8Array(4);
+                    this._decodeBits(carriers, tn, 4);
+                    this._consume(N_SYM);
+                    const rxCrc = ((tn[1] << 4) | tn[0]) | (((tn[3] << 4) | tn[2]) << 8);
+                    const len   = this.totalLen;
+                    if (len > MAX_PAYLOAD) { this.state = ST.SEARCHING; return null; }
+                    for (let i = 0; i < len; i++)
+                        this.payload[i] = (this.nibbleBuf[i*2+1] << 4) | this.nibbleBuf[i*2];
+                    this.payloadLen = len;
+                    if (crc16(this.payload.subarray(0, len)) !== rxCrc) {
+                        this.state = ST.ERROR_CRC;
+                        return null;
+                    }
+                    this.state = ST.DONE;
+                    return this.payload.slice(0, len);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render WASM bitmap onto canvas
+// ---------------------------------------------------------------------------
+function renderPayload(bytes) {
+    const canvas = document.getElementById("ggCanvas");
+    const ctx    = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const ptr = Module._malloc(bytes.length);
+    if (!ptr) { setStatus("malloc failed"); return; }
+    Module.HEAPU8.set(bytes, ptr);
+
+    const bitmapPtr = Module.ccall(
+        "renderBuffer", "number",
+        ["number","number","number","number"],
+        [ptr, bytes.length * 8, canvas.width, canvas.height]
+    );
+    Module._free(ptr);
+    if (!bitmapPtr) { setStatus("renderBuffer returned null"); return; }
+
+    const rowBytes = Math.ceil(canvas.width / 8);
+    const buf      = new Uint8Array(Module.HEAPU8.buffer, bitmapPtr, rowBytes * canvas.height);
+    const imgData  = ctx.createImageData(canvas.width, canvas.height);
+    for (let row = 0; row < canvas.height; row++) {
+        for (let col = 0; col < canvas.width; col++) {
+            const set = buf[row * rowBytes + Math.floor(col / 8)] & (0x80 >> (col % 8));
+            const off = (row * canvas.width + col) * 4;
+            imgData.data[off]   = set ? 255 : 0;
+            imgData.data[off+1] = set ? 255 : 0;
+            imgData.data[off+2] = set ? 255 : 0;
+            imgData.data[off+3] = 255;
+        }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    Module._free(bitmapPtr);
+}
+
+// ---------------------------------------------------------------------------
+// Status / progress helpers
+// ---------------------------------------------------------------------------
+function setStatus(msg) { document.getElementById("status").textContent = msg; }
+function setProgress(done, total) {
+    document.getElementById("progress-bar").style.width =
+        total > 0 ? (done / total * 100) + "%" : "0%";
+}
+
+// ---------------------------------------------------------------------------
+// Mic / audio wiring
+// ---------------------------------------------------------------------------
+let _audioCtx = null;
+let _recorder  = null;
+let _decoder   = new OfdmDecoder();
+
+function startListening() {
+    const btnListen = document.getElementById("btnListen");
+    const btnStop   = document.getElementById("btnStop");
+
+    if (!_audioCtx) {
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    }
+    _decoder.reset();
+    setProgress(0, 1);
+    setStatus("Listening…");
+
+    const constraints = { audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false } };
+
+    navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        const src    = _audioCtx.createMediaStreamSource(stream);
+        // createScriptProcessor is deprecated but universally available
+        _recorder    = _audioCtx.createScriptProcessor(4096, 1, 1);
+        _recorder.onaudioprocess = e => {
+            const f32     = e.inputBuffer.getChannelData(0);
+            const payload = _decoder.process(f32);
+            if (payload) {
+                renderPayload(payload);
+                setStatus(`Done — ${payload.length} bytes, CRC OK`);
+                setProgress(payload.length, payload.length);
+                stopListening();
+                _decoder.reset();
+            } else if (_decoder.state === ST.ERROR_CRC) {
+                setStatus("CRC error — retrying…");
+                _decoder.reset();
+            }
+        };
+        src.connect(_recorder);
+        _recorder.connect(_audioCtx.destination);
+        btnListen.hidden = true;
+        btnStop.hidden   = false;
+        btnStop.classList.add("active");
+    }).catch(err => {
+        setStatus("Mic error: " + err.message);
+    });
+}
+
+function stopListening() {
+    if (_recorder) {
+        _recorder.disconnect();
+        _recorder = null;
+    }
+    const btnListen = document.getElementById("btnListen");
+    const btnStop   = document.getElementById("btnStop");
+    btnListen.hidden = false;
+    btnStop.hidden   = true;
+    btnStop.classList.remove("active");
+}
+
+document.getElementById("btnListen").addEventListener("click", startListening);
+document.getElementById("btnStop").addEventListener("click", () => {
+    stopListening();
+    setStatus("Stopped.");
+});
+
+// ---------------------------------------------------------------------------
+// WASM ready callback
+// ---------------------------------------------------------------------------
+window.editorInit = function () {
+    document.getElementById("btnListen").disabled = false;
+    setStatus("Ready — press Start listening, then transmit from the editor.");
+};
+  </script>
+</body>
+</html>
