@@ -166,7 +166,10 @@ class OfdmDecoder {
 
                 case ST.SEARCHING:
                     if (this.ringFill < N_SYM) return null;
-                    if (this._carrierEnergy(this.ringHead) >= PREAMBLE_ENERGY_RATIO) {
+                    {
+                    const e1 = this._carrierEnergy(this.ringHead);
+                    if (e1 >= PREAMBLE_ENERGY_RATIO) {
+                        console.log(`[ofdm] preamble1: energy=${e1.toFixed(3)} ringHead=${this.ringHead} ringFill=${this.ringFill}`);
                         this._estimateChannel(this.ringHead);
                         this._consume(N_SYM);
                         this.state = ST.PREAMBLE1;
@@ -177,12 +180,24 @@ class OfdmDecoder {
                         // page. The preamble is 2 symbols (2560 samples) so we still
                         // get ~10 detection windows per symbol even at this stride.
                         this._consume(N_CP);
-                    }
+                    }}
                     break;
 
-                case ST.PREAMBLE1:
-                    if (this.ringFill < N_SYM) return null;
-                    if (this._carrierEnergy(this.ringHead) >= PREAMBLE_ENERGY_RATIO) {
+                case ST.PREAMBLE1: {
+                    // Need 2×N_SYM in ring so we can scan forward for best alignment.
+                    if (this.ringFill < N_SYM * 2) return null;
+                    // The N_CP stride in SEARCHING can leave us up to N_CP-1 samples
+                    // misaligned. Scan forward within one symbol period to find where
+                    // preamble-2 energy peaks, then lock onto that position.
+                    let bestOff = 0, bestE = 0;
+                    for (let off = 0; off + N_SYM <= this.ringFill; off += N_CP) {
+                        const e = this._carrierEnergy(this.ringHead + off);
+                        if (e > bestE) { bestE = e; bestOff = off; }
+                        if (off >= N_SYM) break; // scanned one full symbol window
+                    }
+                    console.log(`[ofdm] preamble2 scan: bestE=${bestE.toFixed(3)} bestOff=${bestOff} ringFill=${this.ringFill}`);
+                    if (bestE >= PREAMBLE_ENERGY_RATIO) {
+                        this._consume(bestOff);          // realign to peak
                         this._estimateChannel(this.ringHead);
                         this._consume(N_SYM);
                         this.state = ST.HEADER;
@@ -191,6 +206,7 @@ class OfdmDecoder {
                         this.state = ST.SEARCHING;
                     }
                     break;
+                }
 
                 case ST.HEADER: {
                     if (this.ringFill < N_SYM) return null;
