@@ -99,12 +99,14 @@ console.log("\n--- Preamble structure ---");
 
 console.log("\n--- makeSymbol amplitude ---");
 {
+    // All-+1 carriers = worst-case coherent peak; SCALE is chosen so peak ≈ ±0.5
     const carriers = new Float64Array(N_CARRIERS).fill(1.0);
     const sym = makeSymbol(carriers);
     assertEq(sym.length, N_SYM, "symbol length = N_SYM");
     let maxAmp = 0;
     for (let i = 0; i < sym.length; i++) maxAmp = Math.max(maxAmp, Math.abs(sym[i]));
-    assert(maxAmp <= 0.501, `max amplitude ${maxAmp.toFixed(4)} <= 0.5 (with tiny rounding tolerance)`);
+    assert(maxAmp >= 0.3,  `max amplitude ${maxAmp.toFixed(4)} >= 0.3 (audible signal, not near-zero)`);
+    assert(maxAmp <= 0.501, `max amplitude ${maxAmp.toFixed(4)} <= 0.5 (no clipping)`);
 }
 
 console.log("\n--- ofdmEncode output length ---");
@@ -129,6 +131,7 @@ console.log("\n--- ofdmEncode amplitude ---");
     const out = ofdmEncode(new Uint8Array(100).fill(0xab));
     let maxAmp = 0;
     for (let i = 0; i < out.length; i++) maxAmp = Math.max(maxAmp, Math.abs(out[i]));
+    assert(maxAmp >= 0.1,  `max amplitude ${maxAmp.toFixed(4)} >= 0.1 (audible, not near-zero)`);
     assert(maxAmp <= 0.501, `max amplitude ${maxAmp.toFixed(4)} stays within ±0.5`);
 }
 

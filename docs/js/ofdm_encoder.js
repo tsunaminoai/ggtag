@@ -9,7 +9,9 @@ const OfdmEncoder = (() => {
     const BIN_LO       = 7;       // first carrier bin (≈328 Hz)
     const BIN_HI       = 170;     // last carrier bin (≈7969 Hz)
     const N_CARRIERS   = BIN_HI - BIN_LO + 1;  // 164
-    const SCALE        = 0.5 / N_CARRIERS;      // keep output within ±0.5
+    // Worst-case coherent peak (all 164 carriers = +1): N_CARRIERS * (2/N_FFT) after IFFT.
+    // SCALE = 1 / (N_CARRIERS * 2/N_FFT * 2) = N_FFT / (4 * N_CARRIERS) ≈ 1.56 → peak = ±0.5
+    const SCALE        = N_FFT / (4 * N_CARRIERS);
 
     // --- Hamming(7,4) --------------------------------------------------
     // G matrix (systematic form): each row is the 7-bit codeword for data bits d3..d0
