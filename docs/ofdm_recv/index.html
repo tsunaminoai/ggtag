@@ -74,6 +74,9 @@ class OfdmDecoder {
         this.nibblesDone   = 0;
         this.payload    = new Uint8Array(MAX_PAYLOAD);
         this.payloadLen = 0;
+        // Pre-allocated FFT scratch buffers — avoids per-call GC churn.
+        this._re = new Float64Array(N_FFT);
+        this._im = new Float64Array(N_FFT);
     }
 
     reset() { this._reset(); }
@@ -97,16 +100,16 @@ class OfdmDecoder {
     }
 
     _fftAt(ringOff) {
-        const re = new Float64Array(N_FFT);
-        const im = new Float64Array(N_FFT);
+        const re = this._re, im = this._im;
+        im.fill(0);
         const start = (ringOff + N_CP) % RING_SIZE;
         for (let k = 0; k < N_FFT; k++) re[k] = this.ring[(start + k) % RING_SIZE];
         fft(re, im, false);
-        return [re, im];
     }
 
     _carrierEnergy(ringOff) {
-        const [re, im] = this._fftAt(ringOff);
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
         let cE = 0, tE = 0;
         for (let b = 0; b < N_FFT >> 1; b++) {
             const e = re[b]*re[b] + im[b]*im[b];
@@ -117,7 +120,8 @@ class OfdmDecoder {
     }
 
     _estimateChannel(ringOff) {
-        const [re, im] = this._fftAt(ringOff);
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
         for (let i = 0; i < N_CARRIERS; i++) {
             const bin = BIN_LO + i;
             const mag = Math.sqrt(re[bin]*re[bin] + im[bin]*im[bin]);
@@ -126,7 +130,8 @@ class OfdmDecoder {
     }
 
     _extractCarriers(ringOff) {
-        const [re, im] = this._fftAt(ringOff);
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
         const out = new Float64Array(N_CARRIERS);
         for (let i = 0; i < N_CARRIERS; i++) {
             const bin = BIN_LO + i;
@@ -167,7 +172,11 @@ class OfdmDecoder {
                         this.state = ST.PREAMBLE1;
                         setStatus("Preamble 1 detected…");
                     } else {
-                        this._consume(1);
+                        // Stride by CP length (256), not 1. Sliding sample-by-sample
+                        // would run thousands of FFTs per audio callback and freeze the
+                        // page. The preamble is 2 symbols (2560 samples) so we still
+                        // get ~10 detection windows per symbol even at this stride.
+                        this._consume(N_CP);
                     }
                     break;
 
