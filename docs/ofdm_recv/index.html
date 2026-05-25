@@ -53,7 +53,8 @@ const {
 } = OfdmEncoder;
 
 const NIBBLES_PER_SYM       = Math.floor(N_CARRIERS / 7); // 23
-const PREAMBLE_ENERGY_RATIO = 0.3;
+const PREAMBLE_ENERGY_RATIO = 0.3;   // carrier energy fraction (filters broadband noise)
+const CP_CORR_THRESHOLD     = 0.5;   // Pearson CP correlation (filters non-OFDM signals)
 const MAX_PAYLOAD           = 2048;
 const RING_SIZE             = N_SYM * 6;                  // 7680
 
@@ -99,23 +100,27 @@ class OfdmDecoder {
         this.ringFill -= n;
     }
 
-    // CP correlation: for each candidate offset d in [from, to], compute the
-    // normalised correlation between the CP window and the corresponding tail
-    // of the symbol.  Peak at d=0 means the symbol starts exactly at center.
-    // Searches backward (negative d) using raw ring array access — the data is
-    // still physically present even if ringHead has advanced past it.
+    // Pearson correlation between the CP window at pos and the matching symbol
+    // tail N_FFT samples later.  Returns value in [-1, 1]; ~1.0 for a valid
+    // OFDM symbol, ~0 for random sound (impossible to fake by accident).
+    _cpMetric(pos) {
+        const s = (pos % RING_SIZE + RING_SIZE) % RING_SIZE;
+        let corr = 0, sumA = 0, sumB = 0;
+        for (let n = 0; n < N_CP; n++) {
+            const a = this.ring[(s + n)         % RING_SIZE];
+            const b = this.ring[(s + n + N_FFT) % RING_SIZE];
+            corr += a * b;  sumA += a * a;  sumB += b * b;
+        }
+        return corr / (Math.sqrt(sumA * sumB) + 1e-30);
+    }
+
+    // Fine-timing via CP correlation: scans offset d in [from, to] around center
+    // and returns the d with the highest Pearson correlation.  Uses raw ring
+    // array — data before ringHead is still physically present in the buffer.
     _fineTiming(center, from, to) {
         let bestMetric = -1e9, bestOff = from;
         for (let d = from; d <= to; d++) {
-            const s = ((center + d) % RING_SIZE + RING_SIZE) % RING_SIZE;
-            let corr = 0, energy = 0;
-            for (let n = 0; n < N_CP; n++) {
-                const a = this.ring[(s + n)           % RING_SIZE];
-                const b = this.ring[(s + n + N_FFT)   % RING_SIZE];
-                corr   += a * b;
-                energy += a * a + b * b;
-            }
-            const metric = corr / (Math.sqrt(energy * 0.5) + 1e-30);
+            const metric = this._cpMetric(center + d);
             if (metric > bestMetric) { bestMetric = metric; bestOff = d; }
         }
         return bestOff;
@@ -191,22 +196,28 @@ class OfdmDecoder {
                     // for the backward CP-correlation fine-timing step.
                     if (this.ringFill < N_SYM + N_CP) return null;
                     {
-                    const e1 = this._carrierEnergy(this.ringHead);
-                    if (e1 >= PREAMBLE_ENERGY_RATIO) {
-                        // Coarse hit. N_CP stride may have overshot the symbol start
-                        // by up to N_CP-1 samples. CP correlation searches backward
-                        // in [-N_CP, 0] to find the exact start; the physical ring
-                        // data is still there even though ringHead has advanced.
-                        const adj = this._fineTiming(this.ringHead, -N_CP, 0);
-                        if (adj < 0) {
-                            this.ringHead = (this.ringHead + adj + RING_SIZE) % RING_SIZE;
-                            this.ringFill -= adj; // adj negative → ringFill grows
+                    // Gate 1: CP correlation — impossible to satisfy by chance.
+                    // Much cheaper than FFT (N_CP multiply-adds vs N log N).
+                    const cp = this._cpMetric(this.ringHead);
+                    if (cp >= CP_CORR_THRESHOLD) {
+                        // Gate 2: carrier energy confirms it's an OFDM preamble,
+                        // not some other signal that happens to have CP structure.
+                        const e1 = this._carrierEnergy(this.ringHead);
+                        if (e1 >= PREAMBLE_ENERGY_RATIO) {
+                            // Fine-timing: step backward up to N_CP to find exact start.
+                            const adj = this._fineTiming(this.ringHead, -N_CP, 0);
+                            if (adj < 0) {
+                                this.ringHead = (this.ringHead + adj + RING_SIZE) % RING_SIZE;
+                                this.ringFill -= adj; // adj negative → ringFill grows
+                            }
+                            console.log(`[ofdm] preamble1: cp=${cp.toFixed(3)} e=${e1.toFixed(3)} adj=${adj}`);
+                            this._estimateChannel(this.ringHead);
+                            this._consume(N_SYM);
+                            this.state = ST.PREAMBLE1;
+                            setStatus("Preamble 1 detected…");
+                        } else {
+                            this._consume(N_CP);
                         }
-                        console.log(`[ofdm] preamble1: e=${e1.toFixed(3)} adj=${adj} ringHead=${this.ringHead}`);
-                        this._estimateChannel(this.ringHead);
-                        this._consume(N_SYM);
-                        this.state = ST.PREAMBLE1;
-                        setStatus("Preamble 1 detected…");
                     } else {
                         this._consume(N_CP);
                     }}
@@ -216,9 +227,10 @@ class OfdmDecoder {
                     if (this.ringFill < N_SYM) return null;
                     // After fine-timing in SEARCHING, ringHead is at exact preamble-1
                     // start; consuming N_SYM put us at exact preamble-2 start.
-                    const e2 = this._carrierEnergy(this.ringHead);
-                    console.log(`[ofdm] preamble2: e=${e2.toFixed(3)} ringFill=${this.ringFill}`);
-                    if (e2 >= PREAMBLE_ENERGY_RATIO) {
+                    const cp2 = this._cpMetric(this.ringHead);
+                    const e2  = this._carrierEnergy(this.ringHead);
+                    console.log(`[ofdm] preamble2: cp=${cp2.toFixed(3)} e=${e2.toFixed(3)} ringFill=${this.ringFill}`);
+                    if (cp2 >= CP_CORR_THRESHOLD && e2 >= PREAMBLE_ENERGY_RATIO) {
                         this._estimateChannel(this.ringHead); // re-estimate on preamble 2
                         this._consume(N_SYM);
                         this.state = ST.HEADER;
