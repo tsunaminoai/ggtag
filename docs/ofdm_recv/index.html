@@ -194,28 +194,22 @@ class OfdmDecoder {
                         : null;
 
                 case ST.SEARCHING:
-                    // Need N_SYM for the energy check, plus N_CP lookback headroom
-                    // for the backward CP-correlation fine-timing step.
-                    if (this.ringFill < N_SYM + N_CP) return null;
+                    if (this.ringFill < N_SYM) return null;
                     {
                     // Gate 1: CP correlation — impossible to satisfy by chance.
-                    // Much cheaper than FFT (N_CP multiply-adds vs N log N).
                     const cp = this._cpMetric(this.ringHead);
                     if (cp >= CP_CORR_THRESHOLD) {
                         // Gate 2: carrier energy + all-positive sign (preamble = all +1;
                         // data symbols are ~50% positive — filters false hits on data).
                         const e1 = this._carrierEnergy(this.ringHead);
-                        // _carrierEnergy already ran _fftAt; reuse this._re for sign check.
                         let posCount = 0;
                         for (let i = 0; i < N_CARRIERS; i++) if (this._re[BIN_LO + i] > 0) posCount++;
                         if (e1 >= PREAMBLE_ENERGY_RATIO && posCount >= N_CARRIERS * 0.7) {
-                            // Fine-timing: step backward up to N_CP to find exact start.
-                            const adj = this._fineTiming(this.ringHead, -N_CP, 0);
-                            if (adj < 0) {
-                                this.ringHead = (this.ringHead + adj + RING_SIZE) % RING_SIZE;
-                                this.ringFill -= adj; // adj negative → ringFill grows
-                            }
-                            console.log(`[ofdm] preamble1: cp=${cp.toFixed(3)} e=${e1.toFixed(3)} pos=${posCount}/${N_CARRIERS} adj=${adj}`);
+                            // No fine-timing: N_CP=256 guard interval tolerates timing
+                            // offsets within the guard window; backward search was causing
+                            // large (>100 sample) misalignments that put preamble2 in the
+                            // wrong position and gave CP correlation of -0.85 there.
+                            console.log(`[ofdm] preamble1: cp=${cp.toFixed(3)} e=${e1.toFixed(3)} pos=${posCount}/${N_CARRIERS}`);
                             this._estimateChannel(this.ringHead);
                             this._consume(N_SYM);
                             this.state = ST.PREAMBLE1;
@@ -230,10 +224,8 @@ class OfdmDecoder {
 
                 case ST.PREAMBLE1: {
                     if (this.ringFill < N_SYM) return null;
-                    // After fine-timing in SEARCHING, ringHead is at exact preamble-1
-                    // start; consuming N_SYM put us at exact preamble-2 start.
-                    // No sign check here — channel phase rotation makes it unreliable on
-                    // real speaker→mic paths; CP correlation + energy are sufficient.
+                    // CP correlation + energy check only — sign check is unreliable on
+                    // real speaker→mic paths due to channel phase rotation.
                     const cp2 = this._cpMetric(this.ringHead);
                     const e2  = this._carrierEnergy(this.ringHead);
                     let posCount2 = 0;
