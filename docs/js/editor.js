@@ -455,6 +455,69 @@ async function programSound(input) {
 }
 
 // ---------------------------------------------------------------------------
+// OFDM sound programming
+// ---------------------------------------------------------------------------
+
+async function programOfdm(input) {
+    const data = await _encodeInput(input);
+    if (!data) throw new Error("encode failed");
+
+    if (typeof OfdmEncoder === "undefined") throw new Error("ofdm_encoder.js not loaded");
+
+    if (!_audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) throw new Error("Web Audio API not supported");
+        _audioCtx = new AC({ sampleRate: 48000 });
+    }
+    if (!_ggwaveAnalyser) {
+        _ggwaveAnalyser = _audioCtx.createAnalyser();
+        _ggwaveAnalyser.fftSize = 2048;
+        _ggwaveAnalyser.smoothingTimeConstant = 0.4;
+        _ggwaveAnalyser.connect(_audioCtx.destination);
+    }
+
+    const f32 = OfdmEncoder.ofdmEncode(data);
+    const totalSyms = f32.length / OfdmEncoder.N_SYM;
+
+    _isTxing   = true;
+    _txStopped = false;
+    _txProgressStart(totalSyms);
+    _startViz();
+
+    try {
+        await new Promise(resolve => {
+            if (_txStopped) { resolve(); return; }
+            const buf = _audioCtx.createBuffer(1, f32.length, _audioCtx.sampleRate);
+            buf.getChannelData(0).set(f32);
+            const src = _audioCtx.createBufferSource();
+            _currentTxSrc = src;
+            src.buffer = buf;
+            src.connect(_ggwaveAnalyser);
+            // Update progress at each symbol period
+            const symDur = OfdmEncoder.N_SYM / _audioCtx.sampleRate;
+            let elapsed = 0;
+            const symInterval = setInterval(() => {
+                if (_txStopped) { clearInterval(symInterval); return; }
+                elapsed = Math.min(elapsed + 1, totalSyms);
+                _txProgressUpdate(elapsed, totalSyms, symDur * (totalSyms - elapsed));
+            }, Math.round(symDur * 1000));
+            src.addEventListener("ended", () => {
+                clearInterval(symInterval);
+                _currentTxSrc = null;
+                resolve();
+            });
+            src.start(0);
+        });
+    } finally {
+        _isTxing      = false;
+        _currentTxSrc = null;
+        _txProgressEnd();
+        _stopViz();
+        _updateTxEstimate();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UI: layer list + properties panel (canvas-first design)
 // ---------------------------------------------------------------------------
 
@@ -1246,14 +1309,22 @@ function _wire() {
             btnProg.disabled = true;
             if (btnStop) btnStop.hidden = false;
             const inp = await _processImages(GGTagModel.getInput(GGTagModel.commands));
-            if (iface === "serial") await programSerial(inp);
-            else                    await programSound(inp);
+            const txMode = document.querySelector("input[name=txMode]:checked")?.value;
+            if (iface === "serial")       await programSerial(inp);
+            else if (txMode === "ofdm")   await programOfdm(inp);
+            else                          await programSound(inp);
         } catch (e) { if (!_txStopped) alert(String(e)); }
         btnProg.disabled = false;
         if (btnStop) btnStop.hidden = true;
     });
 
     document.getElementById("btnStop")?.addEventListener("click", _stopTx);
+
+    // Show/hide OFDM toggle only when Sound mode is active
+    document.querySelectorAll("input[name=iface]").forEach(r => r.addEventListener("change", () => {
+        const tog = document.getElementById("txModeToggle");
+        if (tog) tog.hidden = (document.querySelector("input[name=iface]:checked")?.value === "serial");
+    }));
 
     // Drag-and-drop
     document.addEventListener("drop",     _handleDrop);

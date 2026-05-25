@@ -8,4 +8,5 @@ comptime {
     _ = @import("overflow_test.zig");
     _ = @import("parser_test.zig");
     _ = @import("monoimage_test.zig");
+    _ = @import("ofdm_test.zig");
 }
