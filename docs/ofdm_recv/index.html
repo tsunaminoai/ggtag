@@ -56,7 +56,7 @@ const {
 
 const NIBBLES_PER_SYM       = Math.floor(N_CARRIERS / 7); // 23
 const PREAMBLE_ENERGY_RATIO = 0.3;   // carrier energy fraction (filters broadband noise)
-const CP_CORR_THRESHOLD     = 0.5;   // Pearson CP correlation (filters non-OFDM signals)
+const CP_CORR_THRESHOLD     = 0.25;  // Pearson CP correlation — lowered for room multipath
 const MAX_PAYLOAD           = 2048;
 const RING_SIZE             = N_SYM * 6;                  // 7680
 
@@ -406,45 +406,48 @@ function ggwaveInit(sampleRate) {
     console.log("[ggwave] instance initialised at", sampleRate, "Hz");
 }
 
-// Feed one scriptProcessor buffer to ggwave. Returns assembled payload Uint8Array
-// when a full transfer completes, null otherwise.
+// Feed one scriptProcessor buffer to ggwave in 1024-sample chunks (matching
+// recv.js buffer size — larger chunks can trip ggwave's internal state machine).
+// Returns assembled payload Uint8Array when a full transfer completes; null otherwise.
 function ggwaveFeed(f32) {
     if (!_ggwave || _ggwaveInst === null) return null;
-    let tmp;
-    try { tmp = _ggwave.decode(_ggwaveInst, convertToInt8(f32)); }
-    catch (e) { console.warn("[ggwave] decode threw:", e); return null; }
-    if (!tmp || !tmp.buffer) return null;
-    const pkt = new Uint8Array(tmp.buffer, tmp.byteOffset, tmp.length);
-    if (!pkt || pkt.length === 0) return null;
-    if (pkt.length !== 16) {
-        console.log(`[ggwave] unexpected packet length ${pkt.length}`);
-        return null;
-    }
-    if (ggwaveEqual(_ggLastPkt, pkt)) return null; // duplicate suppression
-    _ggLastPkt = pkt.slice();
+    const CHUNK = 1024;
+    for (let off = 0; off < f32.length; off += CHUNK) {
+        const chunk = f32.subarray(off, off + CHUNK);
+        let tmp;
+        try { tmp = _ggwave.decode(_ggwaveInst, convertToInt8(chunk)); }
+        catch (e) { console.warn("[ggwave] decode threw:", e); continue; }
+        if (!tmp || !tmp.buffer || tmp.length === 0) continue;
+        const pkt = new Uint8Array(tmp.buffer, tmp.byteOffset, tmp.length);
+        if (pkt.length !== 16) {
+            console.log(`[ggwave] unexpected packet length ${pkt.length}`);
+            continue;
+        }
+        if (ggwaveEqual(_ggLastPkt, pkt)) continue; // duplicate suppression
+        _ggLastPkt = pkt.slice();
 
-    if (_ggRecvBuf.length === 0) {
-        _ggExpected = (pkt[0] << 8) | pkt[1];  // big-endian length in first 2 bytes
-        console.log(`[ggwave] first packet: expected ${_ggExpected} bytes`);
-        const combined = new Uint8Array(_ggRecvBuf.length + pkt.length - 2);
-        combined.set(_ggRecvBuf, 0);
-        combined.set(pkt.subarray(2), _ggRecvBuf.length);
-        _ggRecvBuf = combined;
-    } else {
-        const combined = new Uint8Array(_ggRecvBuf.length + pkt.length);
-        combined.set(_ggRecvBuf, 0);
-        combined.set(pkt, _ggRecvBuf.length);
-        _ggRecvBuf = combined;
-    }
+        if (_ggRecvBuf.length === 0) {
+            _ggExpected = (pkt[0] << 8) | pkt[1];  // big-endian length in first 2 bytes
+            console.log(`[ggwave] first packet: expected ${_ggExpected} bytes`);
+            const combined = new Uint8Array(pkt.length - 2);
+            combined.set(pkt.subarray(2), 0);
+            _ggRecvBuf = combined;
+        } else {
+            const combined = new Uint8Array(_ggRecvBuf.length + pkt.length);
+            combined.set(_ggRecvBuf, 0);
+            combined.set(pkt, _ggRecvBuf.length);
+            _ggRecvBuf = combined;
+        }
 
-    setDecoderStatus(`ggwave: ${_ggRecvBuf.length}/${_ggExpected} bytes`);
-    setProgress(_ggRecvBuf.length, _ggExpected);
-    console.log(`[ggwave] packet received, buf=${_ggRecvBuf.length}/${_ggExpected}`);
+        setDecoderStatus(`ggwave: ${_ggRecvBuf.length}/${_ggExpected} bytes`);
+        setProgress(_ggRecvBuf.length, _ggExpected);
+        console.log(`[ggwave] packet received, buf=${_ggRecvBuf.length}/${_ggExpected}`);
 
-    if (_ggExpected > 0 && _ggRecvBuf.length >= _ggExpected) {
-        const payload = _ggRecvBuf.slice(0, _ggExpected);
-        ggwaveReset();
-        return payload;
+        if (_ggExpected > 0 && _ggRecvBuf.length >= _ggExpected) {
+            const payload = _ggRecvBuf.slice(0, _ggExpected);
+            ggwaveReset();
+            return payload;
+        }
     }
     return null;
 }
