@@ -330,6 +330,13 @@ fn buildTests(
     });
     test_mod.link_libc = true;
 
+    const ofdm_mod = b.createModule(.{
+        .root_source_file = b.path("src/ofdm_recv.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addImport("ofdm_recv", ofdm_mod);
+
     const test_exe = b.addTest(.{
         .root_module = test_mod,
     });

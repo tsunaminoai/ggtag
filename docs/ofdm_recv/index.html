@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OFDM receiver — ggtag</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #f8f8f8; }
+    h2   { margin: 0 0 16px; }
+    #ggCanvas {
+      display: block;
+      border: 2px solid #ccc;
+      background: #fff;
+      max-width: 100%;
+    }
+    #controls { margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+    button {
+      padding: 6px 16px; font-size: 14px; cursor: pointer;
+      border: 1px solid #888; border-radius: 4px; background: #e8e8e8;
+    }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.active { background: #d44; color: #fff; border-color: #a00; }
+    #status { font-size: 13px; color: #555; }
+    #progress-wrap {
+      margin-top: 8px; height: 6px; background: #ddd;
+      border-radius: 3px; width: 528px; max-width: 100%;
+    }
+    #progress-bar { height: 100%; width: 0; background: #4a8; border-radius: 3px; transition: width 0.1s; }
+  </style>
+</head>
+<body>
+  <h2>OFDM / ggwave receiver</h2>
+  <canvas id="ggCanvas" width="528" height="384"></canvas>
+  <div id="progress-wrap"><div id="progress-bar"></div></div>
+  <div id="controls">
+    <button id="btnListen" disabled>Start listening</button>
+    <button id="btnStop" hidden>Stop</button>
+    <span id="status">Loading WASM…</span>
+  </div>
+  <div id="decoder-status" style="margin-top:8px;font-size:12px;color:#777;"></div>
+
+  <script src="../js/ggwave.js"></script>
+  <script src="../js/ofdm_encoder.js"></script>
+  <script src="../js/ggtag_wasm.js"></script>
+  <script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// OFDM decoder — JS port of ofdm_recv.c, tuned for browser (48 kHz, 1024-pt)
+// Reuses constants + FFT/Hamming/CRC helpers from ofdm_encoder.js.
+// ---------------------------------------------------------------------------
+const {
+    N_FFT, N_CP, N_SYM, BIN_LO, BIN_HI, N_CARRIERS,
+    fft, hamming74Decode, crc8, crc16,
+} = OfdmEncoder;
+
+const NIBBLES_PER_SYM       = Math.floor(N_CARRIERS / 7); // 23
+const PREAMBLE_ENERGY_RATIO = 0.3;   // carrier energy fraction (filters broadband noise)
+const CP_CORR_THRESHOLD     = 0.25;  // Pearson CP correlation — lowered for room multipath
+const MAX_PAYLOAD           = 2048;
+const RING_SIZE             = N_SYM * 6;                  // 7680
+
+const ST = Object.freeze({ SEARCHING:0, PREAMBLE1:1, HEADER:2, DATA:3, TAIL:4, DONE:5, ERROR_CRC:6 });
+
+class OfdmDecoder {
+    constructor() { this._reset(); }
+
+    _reset() {
+        this.ring       = new Float32Array(RING_SIZE);
+        this.ringFill   = 0;
+        this.ringHead   = 0;
+        this.state      = ST.SEARCHING;
+        this.chanEq     = new Float32Array(N_CARRIERS).fill(1.0);
+        this.totalLen   = 0;
+        this.nibbleBuf  = new Uint8Array(MAX_PAYLOAD * 2);
+        this.nibblesNeeded = 0;
+        this.nibblesDone   = 0;
+        this.payload    = new Uint8Array(MAX_PAYLOAD);
+        this.payloadLen = 0;
+        // Pre-allocated FFT scratch buffers — avoids per-call GC churn.
+        this._re = new Float64Array(N_FFT);
+        this._im = new Float64Array(N_FFT);
+    }
+
+    reset() { this._reset(); }
+
+    _push(f32) {
+        for (let i = 0; i < f32.length; i++) {
+            const wp = (this.ringHead + this.ringFill) % RING_SIZE;
+            this.ring[wp] = f32[i];
+            if (this.ringFill < RING_SIZE) {
+                this.ringFill++;
+            } else {
+                this.ringHead = (this.ringHead + 1) % RING_SIZE;
+            }
+        }
+    }
+
+    _consume(n) {
+        if (n > this.ringFill) n = this.ringFill;
+        this.ringHead = (this.ringHead + n) % RING_SIZE;
+        this.ringFill -= n;
+    }
+
+    // Pearson correlation between the CP window at pos and the matching symbol
+    // tail N_FFT samples later.  Returns value in [-1, 1]; ~1.0 for a valid
+    // OFDM symbol, ~0 for random sound (impossible to fake by accident).
+    _cpMetric(pos) {
+        const s = (pos % RING_SIZE + RING_SIZE) % RING_SIZE;
+        let corr = 0, sumA = 0, sumB = 0;
+        for (let n = 0; n < N_CP; n++) {
+            const a = this.ring[(s + n)         % RING_SIZE];
+            const b = this.ring[(s + n + N_FFT) % RING_SIZE];
+            corr += a * b;  sumA += a * a;  sumB += b * b;
+        }
+        return corr / (Math.sqrt(sumA * sumB) + 1e-30);
+    }
+
+    // Fine-timing via CP correlation: scans offset d in [from, to] around center
+    // and returns the d with the highest Pearson correlation.  Uses raw ring
+    // array — data before ringHead is still physically present in the buffer.
+    _fineTiming(center, from, to) {
+        let bestMetric = -1e9, bestOff = from;
+        for (let d = from; d <= to; d++) {
+            const metric = this._cpMetric(center + d);
+            if (metric > bestMetric) { bestMetric = metric; bestOff = d; }
+        }
+        return bestOff;
+    }
+
+    _fftAt(ringOff) {
+        const re = this._re, im = this._im;
+        im.fill(0);
+        const start = (ringOff + N_CP) % RING_SIZE;
+        for (let k = 0; k < N_FFT; k++) re[k] = this.ring[(start + k) % RING_SIZE];
+        fft(re, im, false);
+    }
+
+    _carrierEnergy(ringOff) {
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
+        let cE = 0, tE = 0;
+        for (let b = 0; b < N_FFT >> 1; b++) {
+            const e = re[b]*re[b] + im[b]*im[b];
+            tE += e;
+            if (b >= BIN_LO && b <= BIN_HI) cE += e;
+        }
+        return tE < 1e-30 ? 0 : cE / tE;
+    }
+
+    _estimateChannel(ringOff) {
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
+        for (let i = 0; i < N_CARRIERS; i++) {
+            const bin = BIN_LO + i;
+            const mag = Math.sqrt(re[bin]*re[bin] + im[bin]*im[bin]);
+            this.chanEq[i] = mag > 1e-10 ? mag : 1.0;
+        }
+    }
+
+    _extractCarriers(ringOff) {
+        this._fftAt(ringOff);
+        const re = this._re, im = this._im;
+        const out = new Float64Array(N_CARRIERS);
+        for (let i = 0; i < N_CARRIERS; i++) {
+            const bin = BIN_LO + i;
+            const eq = this.chanEq[i] > 1e-10 ? this.chanEq[i] : 1.0;
+            out[i] = re[bin] / eq;
+        }
+        return out;
+    }
+
+    _decodeBits(carriers, dst, max) {
+        let out = 0, pos = 0;
+        while (pos + 7 <= N_CARRIERS && out < max) {
+            let cw = 0;
+            for (let b = 0; b < 7; b++) cw = (cw << 1) | (carriers[pos + b] < 0 ? 1 : 0);
+            dst[out++] = hamming74Decode(cw);
+            pos += 7;
+        }
+        return out;
+    }
+
+    // Feed f32 microphone samples. Returns Uint8Array payload when a full
+    // frame decodes successfully; null otherwise.
+    process(f32) {
+        this._push(f32);
+        while (true) {
+            switch (this.state) {
+                case ST.DONE:
+                case ST.ERROR_CRC:
+                    return this.state === ST.DONE
+                        ? this.payload.slice(0, this.payloadLen)
+                        : null;
+
+                case ST.SEARCHING:
+                    if (this.ringFill < N_SYM) return null;
+                    {
+                    // Gate 1: CP correlation — impossible to satisfy by chance.
+                    const cp = this._cpMetric(this.ringHead);
+                    if (cp >= CP_CORR_THRESHOLD) {
+                        // Gate 2: carrier energy + all-positive sign (preamble = all +1;
+                        // data symbols are ~50% positive — filters false hits on data).
+                        const e1 = this._carrierEnergy(this.ringHead);
+                        let posCount = 0;
+                        for (let i = 0; i < N_CARRIERS; i++) if (this._re[BIN_LO + i] > 0) posCount++;
+                        if (e1 >= PREAMBLE_ENERGY_RATIO && posCount >= N_CARRIERS * 0.7) {
+                            // No fine-timing: N_CP=256 guard interval tolerates timing
+                            // offsets within the guard window; backward search was causing
+                            // large (>100 sample) misalignments that put preamble2 in the
+                            // wrong position and gave CP correlation of -0.85 there.
+                            console.log(`[ofdm] preamble1: cp=${cp.toFixed(3)} e=${e1.toFixed(3)} pos=${posCount}/${N_CARRIERS}`);
+                            this._estimateChannel(this.ringHead);
+                            this._consume(N_SYM);
+                            this.state = ST.PREAMBLE1;
+                            setStatus("Preamble 1 detected…");
+                        } else {
+                            this._consume(N_CP);
+                        }
+                    } else {
+                        this._consume(N_CP);
+                    }}
+                    break;
+
+                case ST.PREAMBLE1: {
+                    if (this.ringFill < N_SYM) return null;
+                    // CP correlation + energy check only — sign check is unreliable on
+                    // real speaker→mic paths due to channel phase rotation.
+                    const cp2 = this._cpMetric(this.ringHead);
+                    const e2  = this._carrierEnergy(this.ringHead);
+                    let posCount2 = 0;
+                    for (let i = 0; i < N_CARRIERS; i++) if (this._re[BIN_LO + i] > 0) posCount2++;
+                    console.log(`[ofdm] preamble2: cp=${cp2.toFixed(3)} e=${e2.toFixed(3)} pos=${posCount2}/${N_CARRIERS} ringFill=${this.ringFill}`);
+                    if (cp2 >= CP_CORR_THRESHOLD && e2 >= PREAMBLE_ENERGY_RATIO) {
+                        this._estimateChannel(this.ringHead); // re-estimate on preamble 2
+                        this._consume(N_SYM);
+                        this.state = ST.HEADER;
+                        setStatus("Preamble 2 detected, reading header…");
+                    } else {
+                        this.state = ST.SEARCHING;
+                    }
+                    break;
+                }
+
+                case ST.HEADER: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers = this._extractCarriers(this.ringHead);
+                    const nibs = new Uint8Array(8);
+                    if (this._decodeBits(carriers, nibs, 8) < 8) {
+                        console.log("[ofdm] header: _decodeBits returned <8 nibbles, resetting");
+                        this.state = ST.SEARCHING; return null;
+                    }
+                    const lenLo = (nibs[1] << 4) | nibs[0];
+                    const lenHi = (nibs[3] << 4) | nibs[2];
+                    const fi    = (nibs[5] << 4) | nibs[4];
+                    const chk   = (nibs[7] << 4) | nibs[6];
+                    const expectedChk = crc8(new Uint8Array([lenLo, lenHi, fi]));
+                    if (chk !== expectedChk || (lenLo === 0 && lenHi === 0)) {
+                        console.log(`[ofdm] header CRC fail: lenLo=${lenLo} lenHi=${lenHi} fi=${fi} rxChk=0x${chk.toString(16)} expChk=0x${expectedChk.toString(16)}`);
+                        this.state = ST.SEARCHING; return null;
+                    }
+                    this.totalLen      = (lenHi << 8) | lenLo;
+                    this.nibblesNeeded = this.totalLen * 2;
+                    this.nibblesDone   = 0;
+                    this.state         = ST.DATA;
+                    this._consume(N_SYM);
+                    console.log(`[ofdm] header: len=${this.totalLen} frameIdx=${fi} crc8=0x${chk.toString(16)}`);
+                    setStatus(`Header OK — ${this.totalLen} bytes, receiving data…`);
+                    setProgress(0, this.totalLen);
+                    break;
+                }
+
+                case ST.DATA: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers  = this._extractCarriers(this.ringHead);
+                    const remaining = this.nibblesNeeded - this.nibblesDone;
+                    const want      = Math.min(remaining, NIBBLES_PER_SYM);
+                    this.nibblesDone += this._decodeBits(carriers, this.nibbleBuf.subarray(this.nibblesDone), want);
+                    this._consume(N_SYM);
+                    const bytesIn = Math.floor(this.nibblesDone / 2);
+                    setProgress(bytesIn, this.totalLen);
+                    if (this.nibblesDone >= this.nibblesNeeded) this.state = ST.TAIL;
+                    break;
+                }
+
+                case ST.TAIL: {
+                    if (this.ringFill < N_SYM) return null;
+                    const carriers = this._extractCarriers(this.ringHead);
+                    const tn = new Uint8Array(4);
+                    this._decodeBits(carriers, tn, 4);
+                    this._consume(N_SYM);
+                    const rxCrc   = ((tn[1] << 4) | tn[0]) | (((tn[3] << 4) | tn[2]) << 8);
+                    const len     = this.totalLen;
+                    if (len > MAX_PAYLOAD) { this.state = ST.SEARCHING; return null; }
+                    for (let i = 0; i < len; i++)
+                        this.payload[i] = (this.nibbleBuf[i*2+1] << 4) | this.nibbleBuf[i*2];
+                    this.payloadLen = len;
+                    const calcCrc = crc16(this.payload.subarray(0, len));
+                    console.log(`[ofdm] tail: rxCrc=0x${rxCrc.toString(16)} calcCrc=0x${calcCrc.toString(16)} match=${calcCrc === rxCrc}`);
+                    console.log(`[ofdm] payload (${len}B): ${Array.from(this.payload.subarray(0, Math.min(len, 64))).map(b => String.fromCharCode(b)).join('')}`);
+                    if (calcCrc !== rxCrc) {
+                        setStatus(`CRC mismatch — rx=0x${rxCrc.toString(16)} calc=0x${calcCrc.toString(16)}, retrying…`);
+                        this.state = ST.ERROR_CRC;
+                        return null;
+                    }
+                    this.state = ST.DONE;
+                    return this.payload.slice(0, len);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render WASM bitmap onto canvas
+// ---------------------------------------------------------------------------
+function renderPayload(bytes) {
+    const canvas = document.getElementById("ggCanvas");
+    console.log(`[render] renderPayload: ${bytes.length} bytes, canvas ${canvas.width}×${canvas.height}`);
+    const ctx    = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const ptr = Module._malloc(bytes.length);
+    console.log(`[render] malloc(${bytes.length}) → ptr=${ptr}`);
+    if (!ptr) { setStatus("malloc failed"); return; }
+    Module.HEAPU8.set(bytes, ptr);
+
+    const bitmapPtr = Module.ccall(
+        "renderBuffer", "number",
+        ["number","number","number","number"],
+        [ptr, bytes.length * 8, canvas.width, canvas.height]
+    );
+    console.log(`[render] renderBuffer(ptr=${ptr}, bits=${bytes.length*8}, w=${canvas.width}, h=${canvas.height}) → bitmapPtr=${bitmapPtr}`);
+    Module._free(ptr);
+    if (!bitmapPtr) { setStatus("renderBuffer returned null"); return; }
+
+    const rowBytes = Math.ceil(canvas.width / 8);
+    const buf      = new Uint8Array(Module.HEAPU8.buffer, bitmapPtr, rowBytes * canvas.height);
+    const imgData  = ctx.createImageData(canvas.width, canvas.height);
+    for (let row = 0; row < canvas.height; row++) {
+        for (let col = 0; col < canvas.width; col++) {
+            const set = buf[row * rowBytes + Math.floor(col / 8)] & (0x80 >> (col % 8));
+            const off = (row * canvas.width + col) * 4;
+            imgData.data[off]   = set ? 255 : 0;
+            imgData.data[off+1] = set ? 255 : 0;
+            imgData.data[off+2] = set ? 255 : 0;
+            imgData.data[off+3] = 255;
+        }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    Module._free(bitmapPtr);
+}
+
+// ---------------------------------------------------------------------------
+// Status / progress helpers
+// ---------------------------------------------------------------------------
+function setStatus(msg) { document.getElementById("status").textContent = msg; }
+function setDecoderStatus(msg) { document.getElementById("decoder-status").textContent = msg; }
+function setProgress(done, total) {
+    document.getElementById("progress-bar").style.width =
+        total > 0 ? (done / total * 100) + "%" : "0%";
+}
+
+// ---------------------------------------------------------------------------
+// ggwave decoder state
+// ---------------------------------------------------------------------------
+function convertToInt8(f32) {
+    const buf = new ArrayBuffer(f32.byteLength);
+    new Float32Array(buf).set(f32);
+    return new Int8Array(buf);
+}
+
+let _ggwave     = null;
+let _ggwaveInst = null;
+let _ggRecvBuf  = new Uint8Array(0);
+let _ggExpected = 0;
+let _ggLastPkt  = new Uint8Array(0);
+
+function ggwaveEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+
+function ggwaveReset() {
+    _ggRecvBuf  = new Uint8Array(0);
+    _ggExpected = 0;
+    _ggLastPkt  = new Uint8Array(0);
+}
+
+function ggwaveInit(sampleRate) {
+    if (_ggwaveInst !== null) return;
+    const p = _ggwave.getDefaultParameters();
+    p.sampleRateInp  = sampleRate;
+    p.sampleRateOut  = sampleRate;
+    p.operatingMode  = _ggwave.GGWAVE_OPERATING_MODE_RX | _ggwave.GGWAVE_OPERATING_MODE_USE_DSS;
+    _ggwaveInst = _ggwave.init(p);
+    console.log("[ggwave] instance initialised at", sampleRate, "Hz");
+}
+
+// Feed one scriptProcessor buffer to ggwave in 1024-sample chunks (matching
+// recv.js buffer size — larger chunks can trip ggwave's internal state machine).
+// Returns assembled payload Uint8Array when a full transfer completes; null otherwise.
+function ggwaveFeed(f32) {
+    if (!_ggwave || _ggwaveInst === null) return null;
+    const CHUNK = 1024;
+    for (let off = 0; off < f32.length; off += CHUNK) {
+        const chunk = f32.subarray(off, off + CHUNK);
+        let tmp;
+        try { tmp = _ggwave.decode(_ggwaveInst, convertToInt8(chunk)); }
+        catch (e) { console.warn("[ggwave] decode threw:", e); continue; }
+        if (!tmp || !tmp.buffer || tmp.length === 0) continue;
+        const pkt = new Uint8Array(tmp.buffer, tmp.byteOffset, tmp.length);
+        if (pkt.length !== 16) {
+            console.log(`[ggwave] unexpected packet length ${pkt.length}`);
+            continue;
+        }
+        if (ggwaveEqual(_ggLastPkt, pkt)) continue; // duplicate suppression
+        _ggLastPkt = pkt.slice();
+
+        if (_ggRecvBuf.length === 0) {
+            _ggExpected = (pkt[0] << 8) | pkt[1];  // big-endian length in first 2 bytes
+            console.log(`[ggwave] first packet: expected ${_ggExpected} bytes`);
+            const combined = new Uint8Array(pkt.length - 2);
+            combined.set(pkt.subarray(2), 0);
+            _ggRecvBuf = combined;
+        } else {
+            const combined = new Uint8Array(_ggRecvBuf.length + pkt.length);
+            combined.set(_ggRecvBuf, 0);
+            combined.set(pkt, _ggRecvBuf.length);
+            _ggRecvBuf = combined;
+        }
+
+        setDecoderStatus(`ggwave: ${_ggRecvBuf.length}/${_ggExpected} bytes`);
+        setProgress(_ggRecvBuf.length, _ggExpected);
+        console.log(`[ggwave] packet received, buf=${_ggRecvBuf.length}/${_ggExpected}`);
+
+        if (_ggExpected > 0 && _ggRecvBuf.length >= _ggExpected) {
+            const payload = _ggRecvBuf.slice(0, _ggExpected);
+            ggwaveReset();
+            return payload;
+        }
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Mic / audio wiring
+// ---------------------------------------------------------------------------
+let _audioCtx   = null;
+let _recorder   = null;
+let _decoder    = new OfdmDecoder();
+let _cbCount    = 0;  // callback counter for periodic logging
+
+function startListening() {
+    const btnListen = document.getElementById("btnListen");
+    const btnStop   = document.getElementById("btnStop");
+
+    if (!_audioCtx) {
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    }
+    _decoder.reset();
+    ggwaveReset();
+    if (_ggwave) ggwaveInit(_audioCtx.sampleRate);
+    setProgress(0, 1);
+    setStatus("Listening…");
+    setDecoderStatus("OFDM + ggwave both active");
+
+    const constraints = { audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false } };
+
+    navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        // Ensure context is running — some browsers suspend even on user-gesture creation
+        _audioCtx.resume().then(() => {
+            console.log("[audio] AudioContext state:", _audioCtx.state, "sampleRate:", _audioCtx.sampleRate);
+        });
+
+        const src    = _audioCtx.createMediaStreamSource(stream);
+        // createScriptProcessor is deprecated but universally available
+        _recorder    = _audioCtx.createScriptProcessor(4096, 1, 1);
+        _cbCount     = 0;
+        _recorder.onaudioprocess = e => {
+            try {
+                const f32 = e.inputBuffer.getChannelData(0);
+
+                // Log audio level every ~2 seconds (24 callbacks @ 4096/48kHz ≈ 86ms each)
+                _cbCount++;
+                if (_cbCount % 24 === 1) {
+                    let rms = 0;
+                    for (let i = 0; i < f32.length; i++) rms += f32[i] * f32[i];
+                    rms = Math.sqrt(rms / f32.length);
+                    console.log(`[audio] cb#${_cbCount} rms=${rms.toFixed(5)} state=${_decoder.state} ggInst=${_ggwaveInst}`);
+                }
+
+                // --- OFDM path ---
+                const ofdmPayload = _decoder.process(f32);
+                if (ofdmPayload) {
+                    renderPayload(ofdmPayload);
+                    setStatus(`OFDM done — ${ofdmPayload.length} bytes, CRC OK`);
+                    setProgress(ofdmPayload.length, ofdmPayload.length);
+                    stopListening();
+                    _decoder.reset();
+                    return;
+                } else if (_decoder.state === ST.ERROR_CRC) {
+                    setStatus("OFDM CRC error — retrying…");
+                    _decoder.reset();
+                }
+
+                // --- ggwave path (runs in parallel) ---
+                const ggPayload = ggwaveFeed(f32);
+                if (ggPayload) {
+                    renderPayload(ggPayload);
+                    setStatus(`ggwave done — ${ggPayload.length} bytes`);
+                    setProgress(ggPayload.length, ggPayload.length);
+                    stopListening();
+                    return;
+                }
+            } catch (e) {
+                console.error("[onaudioprocess] unhandled error:", e);
+            }
+        };
+        src.connect(_recorder);
+        _recorder.connect(_audioCtx.destination);
+        btnListen.hidden = true;
+        btnStop.hidden   = false;
+        btnStop.classList.add("active");
+    }).catch(err => {
+        setStatus("Mic error: " + err.message);
+    });
+}
+
+function stopListening() {
+    if (_recorder) {
+        _recorder.disconnect();
+        _recorder = null;
+    }
+    const btnListen = document.getElementById("btnListen");
+    const btnStop   = document.getElementById("btnStop");
+    btnListen.hidden = false;
+    btnStop.hidden   = true;
+    btnStop.classList.remove("active");
+}
+
+document.getElementById("btnListen").addEventListener("click", startListening);
+document.getElementById("btnStop").addEventListener("click", () => {
+    stopListening();
+    setStatus("Stopped.");
+});
+
+// ---------------------------------------------------------------------------
+// WASM ready callback — also kick off ggwave initialisation
+// ---------------------------------------------------------------------------
+window.editorInit = function () {
+    document.getElementById("btnListen").disabled = false;
+    setStatus("Ready — press Start listening, then transmit from the editor.");
+    ggwave_factory().then(obj => {
+        _ggwave = obj;
+        console.log("[ggwave] WASM loaded");
+        setDecoderStatus("OFDM + ggwave ready");
+    }).catch(err => {
+        console.warn("[ggwave] failed to load:", err);
+        setDecoderStatus("OFDM only (ggwave unavailable)");
+    });
+};
+  </script>
+</body>
+</html>

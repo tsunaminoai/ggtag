@@ -65,6 +65,10 @@
 <footer id="txBar">
     <label><input type="radio" name="iface" value="sound" checked> Sound</label>
     <label><input type="radio" name="iface" value="serial"> Serial</label>
+    <span id="txModeToggle" style="margin-left:8px;font-size:12px;color:#888;">
+        <label><input type="radio" name="txMode" value="ggwave" checked> ggwave</label>
+        <label><input type="radio" name="txMode" value="ofdm"> OFDM</label>
+    </span>
     <button id="btnProgram">Program</button>
     <button id="btnStop" hidden>Stop</button>
     <span id="txTimeEst" title="Estimated sound transmission time"></span>
@@ -126,6 +130,7 @@
 <!-- WASM loader — must come before model.js/editor.js; calls window.editorInit when ready -->
 <script src="js/ggtag_wasm.js"></script>
 <script src="js/model.js"></script>
+<script src="js/ofdm_encoder.js"></script>
 <script src="js/editor.js"></script>
 <script>
 "use strict";

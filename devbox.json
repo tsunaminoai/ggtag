@@ -7,6 +7,9 @@
     "gcc@latest",
     "gpp@latest",
     "python310Packages.pip@latest",
+    "cmake@latest",
+    "gcc-arm-embedded@latest",
+    "gnumake@latest"
     "zig@0.16.0",
     "zls@0.16.0"
   ],
@@ -15,11 +18,19 @@
       "echo 'Welcome to devbox!' > /dev/null"
     ],
     "scripts": {
-      "build":   ["zig build wasm"],
-      "serve":   ["python3 -m http.server --directory docs 8080"],
-      "dev":     ["zig build wasm && python3 -m http.server --directory docs 8080"],
-      "test":    ["zig build test"],
-      "test:js": ["node docs/js/editor.test.js"]
+      "build": ["zig build wasm"],
+      "serve": ["python3 -m http.server --directory docs 8080"],
+      "dev": ["zig build wasm && python3 -m http.server --directory docs 8080"],
+      "test": ["zig build test"],
+      "test:js": ["node docs/js/editor.test.js"],
+      "firmware:build": [
+        "mkdir -p build-pico",
+        "cmake -B build-pico -S . -DEPD=${EPD:-3in52-rse}",
+        "cmake --build build-pico --target ggtag -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+      ],
+      "firmware:flash": [
+        "DRIVE=$(find /run/media /media /Volumes -maxdepth 3 -name 'RPI-RP2' 2>/dev/null | head -1); [ -n \"$DRIVE\" ] || { echo 'ERROR: RPI-RP2 not found. Hold BOOTSEL and replug USB.'; exit 1; }; cp build-pico/ggtag.uf2 \"$DRIVE/\" && echo \"Flashed build-pico/ggtag.uf2 to $DRIVE\""
+      ]
     }
   }
 }
