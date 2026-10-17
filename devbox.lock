@@ -389,6 +389,118 @@
           "store_path": "/nix/store/c86r37pks9a6rd1hn9gjzhxw4a6ym13c-python3.10-PyAudio-0.2.13"
         }
       }
+    },
+    "zig@0.16.0": {
+      "last_modified": "2026-10-02T22:55:44Z",
+      "resolved": "github:NixOS/nixpkgs/55ba7f49ef2962b42cbd126522b7df5f95037679#zig",
+      "source": "devbox-search",
+      "version": "0.16.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/1yqcgzbny4k5p4b9irn5vw4vy8b5d5dh-zig-0.16.0",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/5d4ycm0d1mc7j7a58b7bj1b22mw4cprr-zig-0.16.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/1yqcgzbny4k5p4b9irn5vw4vy8b5d5dh-zig-0.16.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/amh3bnymjncd56jwmd2hqdkciz9d7pys-zig-0.16.0",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/nggishdy0y2cqx3p1js220m1jl76gkmh-zig-0.16.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/amh3bnymjncd56jwmd2hqdkciz9d7pys-zig-0.16.0"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/7wsm80i713618s84j1hw2nk2v58zf081-zig-0.16.0",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/6h4nc1xc8kr3wfn7f4f6ma4my48mn9qk-zig-0.16.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/7wsm80i713618s84j1hw2nk2v58zf081-zig-0.16.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/qsk2cha4nk70bpz53qix9mypj4mjcbsr-zig-0.16.0",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/7g6azggrab0gzrcw2vrbzl0i33pb762d-zig-0.16.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/qsk2cha4nk70bpz53qix9mypj4mjcbsr-zig-0.16.0"
+        }
+      }
+    },
+    "zls@0.16.0": {
+      "last_modified": "2026-10-02T22:55:44Z",
+      "resolved": "github:NixOS/nixpkgs/55ba7f49ef2962b42cbd126522b7df5f95037679#zls",
+      "source": "devbox-search",
+      "version": "0.16.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/i6f9l7k8ba0fvlj9f2aa2507kwfxx8vr-zls-0.16.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/i6f9l7k8ba0fvlj9f2aa2507kwfxx8vr-zls-0.16.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/ls410cgml31x4baqxj06rcdqhhivmhh5-zls-0.16.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/ls410cgml31x4baqxj06rcdqhhivmhh5-zls-0.16.0"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/5bmixbfkgywv2mbclavhz4fi45qga6vl-zls-0.16.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/5bmixbfkgywv2mbclavhz4fi45qga6vl-zls-0.16.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/gp5jrx6waw2bhv2dgfnbcq2y8r1n8cc7-zls-0.16.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/gp5jrx6waw2bhv2dgfnbcq2y8r1n8cc7-zls-0.16.0"
+        }
+      }
     }
   }
 }

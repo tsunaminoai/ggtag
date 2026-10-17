@@ -6,17 +6,19 @@
     "python310Packages.pyaudio@latest",
     "gcc@latest",
     "gpp@latest",
-    "python310Packages.pip@latest"
+    "python310Packages.pip@latest",
+    "zig@0.16.0",
+    "zls@0.16.0"
   ],
   "shell": {
     "init_hook": [
       "echo 'Welcome to devbox!' > /dev/null"
     ],
     "scripts": {
-      "build": ["zig build wasm"],
-      "serve": ["python3 -m http.server --directory docs 8080"],
-      "dev": ["zig build wasm && python3 -m http.server --directory docs 8080"],
-      "test": ["zig build test"],
+      "build":   ["zig build wasm"],
+      "serve":   ["python3 -m http.server --directory docs 8080"],
+      "dev":     ["zig build wasm && python3 -m http.server --directory docs 8080"],
+      "test":    ["zig build test"],
       "test:js": ["node docs/js/editor.test.js"]
     }
   }
